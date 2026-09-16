@@ -1726,6 +1726,8 @@ function exportExcel(scope) {
     "EXPORT STATUS": r.exportStatus,
   }));
 
+  //dispatch section
+
   const filename = `dispatch-records-${scope}-${todayISO()}.xlsx`;
 
   if (typeof XLSX !== "undefined") {
