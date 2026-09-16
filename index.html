@@ -1,0 +1,638 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Book Transport &amp; Dispatch Management</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Public+Sans:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet" onerror="this.remove()">
+<link rel="stylesheet" href="styles.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js" onerror="window.__XLSX_MISSING__=true"></script>
+</head>
+<body>
+
+<!-- ============ APP SHELL ============ -->
+<div class="app-shell">
+
+  <!-- SIDEBAR -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="brand-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
+      </div>
+      <div class="brand-text">
+        <div class="brand-title">Book Transport</div>
+        <div class="brand-sub">&amp; Dispatch Management</div>
+      </div>
+    </div>
+
+    <nav class="nav" aria-label="Main navigation">
+      <button class="nav-item is-active" data-page="dashboard">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1"/><rect x="14" y="3" width="7" height="5" rx="1"/><rect x="14" y="12" width="7" height="9" rx="1"/><rect x="3" y="16" width="7" height="5" rx="1"/></svg>
+        <span>Dashboard</span>
+      </button>
+      <button class="nav-item" data-page="dispatch">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="9" y1="9" x2="9" y2="21"/></svg>
+        <span>Dispatch Records</span>
+      </button>
+      <button class="nav-item" data-page="expenses">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>
+        <span>Transport Expenses</span>
+      </button>
+      <button class="nav-item" data-page="exports">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg>
+        <span>Export Register</span>
+      </button>
+      <button class="nav-item" data-page="masters">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.6a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.5"/></svg>
+        <span>Masters</span>
+      </button>
+      <button class="nav-item" data-page="settings">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>Settings</span>
+      </button>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="save-indicator" id="saveIndicator" aria-live="polite">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>
+        <span>All changes saved</span>
+      </div>
+    </div>
+  </aside>
+
+  <div class="sidebar-scrim" id="sidebarScrim"></div>
+
+  <!-- MAIN -->
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn only-mobile" id="menuToggle" aria-label="Open menu" title="Menu">
+        <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+      </button>
+      <div class="topbar-title">
+        <span id="topbarTitleText">BOOK TRANSPORT &amp; DISPATCH MANAGEMENT</span>
+      </div>
+      <div class="topbar-sub" id="topbarSub">Book Publication &amp; Distribution System</div>
+    </header>
+
+    <main class="content" id="content">
+
+      <!-- ===================== DASHBOARD ===================== -->
+      <section class="page is-active" id="page-dashboard">
+        <div class="page-head">
+          <div>
+            <h1>Dashboard</h1>
+            <p class="page-desc">A quick look at today's dispatch activity.</p>
+          </div>
+        </div>
+
+        <div class="stat-grid">
+          <div class="stat-card">
+            <div class="stat-label">Total Dispatch Records</div>
+            <div class="stat-value" id="statTotalRecords">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Total Bundles</div>
+            <div class="stat-value" id="statTotalBundles">0</div>
+          </div>
+          <div class="stat-card">
+            <div class="stat-label">Total Transport Amount</div>
+            <div class="stat-value" id="statTotalAmount">₹0.00</div>
+          </div>
+          <div class="stat-card accent-green">
+            <div class="stat-label">Exported Records</div>
+            <div class="stat-value" id="statExported">0</div>
+          </div>
+          <div class="stat-card accent-amber">
+            <div class="stat-label">Pending Export</div>
+            <div class="stat-value" id="statPending">0</div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h2>Records by Transport Mode</h2></div>
+          <div class="mode-bars" id="modeBars"></div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head">
+            <h2>Recent Dispatch Records</h2>
+            <button class="btn btn-ghost" data-page="dispatch">View all →</button>
+          </div>
+          <div class="table-scroll">
+            <table class="mini-table" id="recentTable">
+              <thead><tr><th>Date</th><th>Party / School</th><th>Area</th><th>Amount</th><th>Status</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== DISPATCH RECORDS ===================== -->
+      <section class="page" id="page-dispatch">
+        <div class="page-head">
+          <div>
+            <h1>Dispatch Records</h1>
+            <p class="page-desc">Manage book dispatch and transport records.</p>
+          </div>
+        </div>
+
+        <!-- Filter bar -->
+        <div class="panel filter-panel">
+          <div class="filter-grid">
+            <div class="field">
+              <label for="fFromDate">From Date</label>
+              <input type="date" id="fFromDate">
+            </div>
+            <div class="field">
+              <label for="fToDate">To Date</label>
+              <input type="date" id="fToDate">
+            </div>
+            <div class="field">
+              <label for="fDriver">Driver</label>
+              <select id="fDriver"><option value="">All Drivers</option></select>
+            </div>
+            <div class="field">
+              <label for="fMode">Transport Mode</label>
+              <select id="fMode"><option value="">All Modes</option></select>
+            </div>
+            <div class="field">
+              <label for="fTransporter">Transporter</label>
+              <select id="fTransporter"><option value="">All Transporters</option></select>
+            </div>
+            <div class="field">
+              <label for="fArea">Area / City</label>
+              <select id="fArea"><option value="">All Areas</option></select>
+            </div>
+            <div class="field field-search">
+              <label for="fSearch">Search</label>
+              <input type="text" id="fSearch" placeholder="Search Party / Invoice / Bilty...">
+            </div>
+          </div>
+          <div class="filter-actions">
+            <button class="btn btn-primary" id="btnApplyFilter">Apply Filter</button>
+            <button class="btn btn-secondary" id="btnResetFilter">Reset Filters</button>
+            <span class="filter-result-count" id="filterResultCount"></span>
+          </div>
+        </div>
+
+        <!-- Action bar -->
+        <div class="action-bar">
+          <button class="btn btn-primary" id="btnAddRow">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add New
+          </button>
+          <button class="btn btn-secondary" id="btnImportExcel">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+            Import Excel
+          </button>
+          <button class="btn btn-secondary" id="btnExportExcel">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+            Export Excel
+          </button>
+          <button class="btn btn-secondary" id="btnPrintTable">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+            Print
+          </button>
+          <button class="btn btn-accent" id="btnExportReport">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg>
+            Export Report
+          </button>
+          <div class="selection-info" id="selectionInfo"></div>
+        </div>
+
+        <!-- Spreadsheet -->
+        <div class="panel sheet-panel">
+          <div class="table-scroll" id="sheetScroll">
+            <table class="sheet-table" id="sheetTable">
+              <thead>
+                <tr>
+                  <th class="col-check"><input type="checkbox" id="selectAllCheck" title="Select all visible"></th>
+                  <th class="sortable" data-key="srlNo">SRL NO</th>
+                  <th class="sortable" data-key="dateBooking">DATE OF BOOKING</th>
+                  <th class="sortable" data-key="dateEntry">DATE OF ENTRY<br>(VIKRY/PETE)</th>
+                  <th class="sortable" data-key="party">PARTY / SCHOOL NAME</th>
+                  <th class="sortable" data-key="area">AREA</th>
+                  <th>INV. NO.</th>
+                  <th class="sortable" data-key="bundles">NO OF BUNDLES</th>
+                  <th>TRANSPORT</th>
+                  <th>BULTY NO</th>
+                  <th class="sortable" data-key="amount">AMOUNT</th>
+                  <th>VOUCHER SRL NO.</th>
+                  <th>VOUCHER NO</th>
+                  <th>DRIVER</th>
+                  <th class="sortable" data-key="exportStatus">EXPORT STATUS</th>
+                  <th class="col-actions">ACTIONS</th>
+                </tr>
+              </thead>
+              <tbody id="sheetBody"></tbody>
+            </table>
+            <div class="empty-state" id="dispatchEmpty" hidden>
+              <p><strong>No records found.</strong></p>
+              <p>Try changing your filters or search.</p>
+              <button class="btn btn-secondary" id="btnEmptyReset">Reset Filters</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Summary bar -->
+        <div class="summary-bar" id="summaryBar">
+          <div class="summary-item"><span class="summary-label">Total Records</span><span class="summary-value" id="sumRecords">0</span></div>
+          <div class="summary-item"><span class="summary-label">Total Bundles</span><span class="summary-value" id="sumBundles">0</span></div>
+          <div class="summary-item"><span class="summary-label">Total Amount</span><span class="summary-value" id="sumAmount">₹0.00</span></div>
+        </div>
+      </section>
+
+      <!-- ===================== TRANSPORT EXPENSES ===================== -->
+      <section class="page" id="page-expenses">
+        <div class="page-head">
+          <div>
+            <h1>Transport Expenses</h1>
+            <p class="page-desc">Track daily transport cost — the total is calculated for you.</p>
+          </div>
+        </div>
+
+        <div class="action-bar">
+          <button class="btn btn-primary" id="btnAddExpense">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add New
+          </button>
+        </div>
+
+        <div class="panel sheet-panel">
+          <div class="table-scroll">
+            <table class="sheet-table" id="expenseTable">
+              <thead>
+                <tr>
+                  <th>DATE</th>
+                  <th>TRANSPORT MODE</th>
+                  <th>DRIVER</th>
+                  <th>NO. OF BULTY</th>
+                  <th>RATE PER BULTY</th>
+                  <th>TOTAL</th>
+                  <th>REMARK</th>
+                  <th class="col-actions">ACTIONS</th>
+                </tr>
+              </thead>
+              <tbody id="expenseBody"></tbody>
+            </table>
+            <div class="empty-state" id="expenseEmpty" hidden>
+              <p><strong>No transport expenses yet.</strong></p>
+              <p>Click "Add New" to record your first expense.</p>
+            </div>
+          </div>
+        </div>
+
+        <div class="summary-bar">
+          <div class="summary-item"><span class="summary-label">Total Bulty</span><span class="summary-value" id="expSumBulty">0</span></div>
+          <div class="summary-item"><span class="summary-label">Total Expense</span><span class="summary-value" id="expSumTotal">₹0.00</span></div>
+        </div>
+      </section>
+
+      <!-- ===================== EXPORT REGISTER ===================== -->
+      <section class="page" id="page-exports">
+        <div class="page-head">
+          <div>
+            <h1>Export Register</h1>
+            <p class="page-desc">Every report you generate, in one permanent record.</p>
+          </div>
+        </div>
+
+        <div class="panel sheet-panel">
+          <div class="table-scroll">
+            <table class="sheet-table" id="exportRegisterTable">
+              <thead>
+                <tr>
+                  <th>EXPORT NO.</th>
+                  <th>EXPORT DATE</th>
+                  <th>SRL FROM</th>
+                  <th>SRL TO</th>
+                  <th>NO. OF RECORDS</th>
+                  <th>TOTAL AMOUNT</th>
+                  <th>DRIVER</th>
+                  <th>TRANSPORT MODE</th>
+                  <th>VO.NO.</th>
+                  <th>STATUS</th>
+                  <th class="col-actions">ACTIONS</th>
+                </tr>
+              </thead>
+              <tbody id="exportRegisterBody"></tbody>
+            </table>
+            <div class="empty-state" id="exportsEmpty" hidden>
+              <p><strong>No reports exported yet.</strong></p>
+              <p>Go to Dispatch Records and click "Export Report" to create your first one.</p>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== MASTERS ===================== -->
+      <section class="page" id="page-masters">
+        <div class="page-head">
+          <div>
+            <h1>Masters</h1>
+            <p class="page-desc">Manage the drivers and transporters used across the system.</p>
+          </div>
+        </div>
+
+        <div class="tabs" id="masterTabs">
+          <button class="tab is-active" data-tab="drivers">Drivers</button>
+          <button class="tab" data-tab="transporters">Transporters</button>
+        </div>
+
+        <div class="tab-panel is-active" id="tab-drivers">
+          <div class="action-bar"><button class="btn btn-primary" id="btnAddDriver">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Driver
+          </button></div>
+          <div class="panel sheet-panel">
+            <div class="table-scroll">
+              <table class="sheet-table" id="driverTable">
+                <thead><tr><th>DRIVER NAME</th><th>DRIVER TYPE</th><th>PHONE</th><th>STATUS</th><th class="col-actions">ACTIONS</th></tr></thead>
+                <tbody id="driverBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-transporters">
+          <div class="action-bar"><button class="btn btn-primary" id="btnAddTransporter">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Transporter
+          </button></div>
+          <div class="panel sheet-panel">
+            <div class="table-scroll">
+              <table class="sheet-table" id="transporterTable">
+                <thead><tr><th>TRANSPORTER NAME</th><th>TRANSPORT MODE</th><th>CONTACT</th><th>STATUS</th><th class="col-actions">ACTIONS</th></tr></thead>
+                <tbody id="transporterBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== SETTINGS ===================== -->
+      <section class="page" id="page-settings">
+        <div class="page-head">
+          <div>
+            <h1>Settings</h1>
+            <p class="page-desc">Set up defaults for numbering, limits and your publication.</p>
+          </div>
+        </div>
+
+        <div class="panel settings-panel">
+          <div class="field-grid">
+            <div class="field">
+              <label for="setCompanyName">Company / Publication Name</label>
+              <input type="text" id="setCompanyName" placeholder="e.g. Vikas Book Publication">
+            </div>
+            <div class="field">
+              <label for="setStartExportNo">Starting Export No.</label>
+              <input type="number" id="setStartExportNo" min="1">
+              <p class="field-hint">Only applies before the first export is created.</p>
+            </div>
+            <div class="field">
+              <label for="setStartVoNo">Starting VO.NO.</label>
+              <input type="number" id="setStartVoNo" min="1">
+              <p class="field-hint">Only applies before the first export is created.</p>
+            </div>
+            <div class="field">
+              <label for="setExportLimit">Default Export Limit (₹)</label>
+              <input type="number" id="setExportLimit" min="0" step="1">
+            </div>
+            <div class="field">
+              <label for="setDefaultDriver">Default Driver</label>
+              <select id="setDefaultDriver"><option value="">None</option></select>
+            </div>
+            <div class="field">
+              <label for="setDefaultMode">Default Transport Mode</label>
+              <select id="setDefaultMode"></select>
+            </div>
+          </div>
+          <div class="filter-actions">
+            <button class="btn btn-primary" id="btnSaveSettings">Save Settings</button>
+          </div>
+        </div>
+
+        <div class="panel settings-panel">
+          <h2 class="danger-title">Danger Zone</h2>
+          <p class="page-desc">These actions cannot be undone.</p>
+          <div class="filter-actions">
+            <button class="btn btn-secondary" id="btnClearDemo">Clear Demo Data</button>
+            <button class="btn btn-danger" id="btnResetApp">Reset Application</button>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+</div>
+
+<!-- ============ TOASTS ============ -->
+<div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+<!-- ============ MODAL: Add/Edit Dispatch Record ============ -->
+<div class="modal-overlay" id="modalRecord" hidden>
+  <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="modalRecordTitle">
+    <div class="modal-head">
+      <h2 id="modalRecordTitle">Add Dispatch Record</h2>
+      <button class="icon-btn" data-close-modal="modalRecord" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-grid" id="recordFormGrid"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalRecord">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveRecord">Save Record</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Delete confirm ============ -->
+<div class="modal-overlay" id="modalDelete" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalDeleteTitle">
+    <div class="modal-head">
+      <h2 id="modalDeleteTitle">Delete Record?</h2>
+      <button class="icon-btn" data-close-modal="modalDelete" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="modalDeleteText">This record will be removed from the master sheet.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalDelete">Cancel</button>
+      <button class="btn btn-danger" id="btnConfirmDelete">Delete</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Export Preview ============ -->
+<div class="modal-overlay" id="modalExportPreview" hidden>
+  <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="modalExportTitle">
+    <div class="modal-head">
+      <h2 id="modalExportTitle">Export Report</h2>
+      <button class="icon-btn" data-close-modal="modalExportPreview" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body" id="exportPreviewBody"></div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalExportPreview">Cancel</button>
+      <button class="btn btn-primary" id="btnConfirmExport">Confirm Export</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Import Excel ============ -->
+<div class="modal-overlay" id="modalImport" hidden>
+  <div class="modal modal-lg" role="dialog" aria-modal="true" aria-labelledby="modalImportTitle">
+    <div class="modal-head">
+      <h2 id="modalImportTitle">Import Excel</h2>
+      <button class="icon-btn" data-close-modal="modalImport" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="importFileInput">Choose an Excel file (.xlsx, .xls, .csv)</label>
+        <input type="file" id="importFileInput" accept=".xlsx,.xls,.csv">
+      </div>
+      <div id="importPreviewWrap" hidden>
+        <p class="field-hint" id="importPreviewCount"></p>
+        <div class="table-scroll import-preview-scroll">
+          <table class="mini-table" id="importPreviewTable"><thead></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalImport">Cancel</button>
+      <button class="btn btn-primary" id="btnConfirmImport" disabled>Import Records</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Add/Edit Driver ============ -->
+<div class="modal-overlay" id="modalDriver" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalDriverTitle">
+    <div class="modal-head">
+      <h2 id="modalDriverTitle">Add Driver</h2>
+      <button class="icon-btn" data-close-modal="modalDriver" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-grid">
+        <div class="field"><label for="drvName">Driver Name</label><input type="text" id="drvName"></div>
+        <div class="field"><label for="drvType">Driver Type</label>
+          <select id="drvType">
+            <option>Company Vehicle</option>
+            <option>External Driver</option>
+            <option>Transport Driver</option>
+          </select>
+        </div>
+        <div class="field"><label for="drvPhone">Phone (optional)</label><input type="text" id="drvPhone"></div>
+        <div class="field"><label for="drvStatus">Status</label>
+          <select id="drvStatus"><option>Active</option><option>Inactive</option></select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalDriver">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveDriver">Save Driver</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Add/Edit Transporter ============ -->
+<div class="modal-overlay" id="modalTransporter" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTransporterTitle">
+    <div class="modal-head">
+      <h2 id="modalTransporterTitle">Add Transporter</h2>
+      <button class="icon-btn" data-close-modal="modalTransporter" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-grid">
+        <div class="field"><label for="trnName">Transporter Name</label><input type="text" id="trnName"></div>
+        <div class="field"><label for="trnMode">Transport Mode</label><select id="trnMode"></select></div>
+        <div class="field"><label for="trnContact">Contact</label><input type="text" id="trnContact"></div>
+        <div class="field"><label for="trnStatus">Status</label>
+          <select id="trnStatus"><option>Active</option><option>Inactive</option></select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalTransporter">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveTransporter">Save Transporter</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Report Viewer / Print Preview ============ -->
+<div class="modal-overlay" id="modalReport" hidden>
+  <div class="modal modal-report" role="dialog" aria-modal="true" aria-labelledby="modalReportTitle">
+    <div class="modal-head no-print">
+      <h2 id="modalReportTitle">Sales Expenses Report</h2>
+      <button class="icon-btn" data-close-modal="modalReport" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body report-modal-body">
+      <div id="reportPrintArea"></div>
+    </div>
+    <div class="modal-foot no-print">
+      <button class="btn btn-secondary" data-close-modal="modalReport">Back</button>
+      <button class="btn btn-primary" id="btnPrintReport">Print Report</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Edit Export No. ============ -->
+<div class="modal-overlay" id="modalEditExportNo" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalEditExportNoTitle">
+    <div class="modal-head">
+      <h2 id="modalEditExportNoTitle">Edit Export No.</h2>
+      <button class="icon-btn" data-close-modal="modalEditExportNo" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field">
+        <label for="editExportNoInput">Export No.</label>
+        <input type="number" id="editExportNoInput" min="1">
+        <p class="field-hint">Must be a number not already used by another export.</p>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalEditExportNo">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveEditExportNo">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Reset confirm ============ -->
+<div class="modal-overlay" id="modalReset" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalResetTitle">
+    <div class="modal-head">
+      <h2 id="modalResetTitle">Reset Application?</h2>
+      <button class="icon-btn" data-close-modal="modalReset" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <p id="modalResetText">This will permanently delete all records, expenses, exports and settings from this browser. This cannot be undone.</p>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalReset">Cancel</button>
+      <button class="btn btn-danger" id="btnConfirmReset">Yes, Reset Everything</button>
+    </div>
+  </div>
+</div>
+
+<!-- Hidden print area for table print -->
+<div id="tablePrintArea" class="print-only"></div>
+
+<!-- Autocomplete lists for inline editing -->
+<datalist id="driverListOptions"></datalist>
+<datalist id="transporterListOptions"></datalist>
+<datalist id="areaListOptions"></datalist>
+<datalist id="modeListOptions"></datalist>
+<datalist id="chargeLabelOptions">
+  <option value="Bus Parking Charge">
+  <option value="Train Parking Charge">
+  <option value="Local Transport Charge">
+  <option value="Loading Charge">
+  <option value="Other Charge">
+</datalist>
+
+<script src="data.js"></script>
+<script src="utils.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
