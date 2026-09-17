@@ -8,6 +8,7 @@ const STORE_KEYS = {
   exports: "btdm_exports",
   drivers: "btdm_drivers",
   transporters: "btdm_transporters",
+  areas: "btdm_areas",
   settings: "btdm_settings",
   seeded: "btdm_seeded",
 };

@@ -23,6 +23,7 @@ const APP = {
   exports: [],
   drivers: [],
   transporters: [],
+  areas: [],
   settings: {},
   filters: { from: "", to: "", driver: "", mode: "", transporter: "", area: "", search: "" },
   sort: { key: "srlNo", dir: "asc" },
@@ -33,6 +34,7 @@ const APP = {
   editingRecordId: null,
   editingDriverId: null,
   editingTransporterId: null,
+  editingAreaId: null,
   editingExportNo: null,
 };
 
@@ -64,6 +66,7 @@ function loadState() {
     }));
     APP.drivers = SEED_DRIVERS.slice();
     APP.transporters = SEED_TRANSPORTERS.slice();
+    APP.areas = SEED_AREAS.slice();
     APP.expenses = [];
     APP.exports = [];
     APP.settings = { ...DEFAULT_SETTINGS };
@@ -75,6 +78,18 @@ function loadState() {
     APP.exports = Store.get(STORE_KEYS.exports, []);
     APP.drivers = Store.get(STORE_KEYS.drivers, SEED_DRIVERS.slice());
     APP.transporters = Store.get(STORE_KEYS.transporters, SEED_TRANSPORTERS.slice());
+    // People upgrading from an earlier version won't have an areas master yet —
+    // build one from whatever areas already appear in their records.
+    const storedAreas = Store.get(STORE_KEYS.areas, null);
+    if (storedAreas) {
+      APP.areas = storedAreas;
+    } else {
+      const existingAreaNames = [...new Set(APP.records.map(r => r.area).filter(Boolean))];
+      APP.areas = existingAreaNames.length
+        ? existingAreaNames.sort().map(name => ({ id: uid("area"), name, status: "Active" }))
+        : SEED_AREAS.slice();
+      saveAreas();
+    }
     APP.settings = { ...DEFAULT_SETTINGS, ...Store.get(STORE_KEYS.settings, {}) };
   }
 }
@@ -85,6 +100,7 @@ function persistAll() {
   Store.set(STORE_KEYS.exports, APP.exports);
   Store.set(STORE_KEYS.drivers, APP.drivers);
   Store.set(STORE_KEYS.transporters, APP.transporters);
+  Store.set(STORE_KEYS.areas, APP.areas);
   Store.set(STORE_KEYS.settings, APP.settings);
 }
 
@@ -105,6 +121,7 @@ function saveExpenses() { Store.set(STORE_KEYS.expenses, APP.expenses); markSavi
 function saveExports() { Store.set(STORE_KEYS.exports, APP.exports); markSaving(); }
 function saveDrivers() { Store.set(STORE_KEYS.drivers, APP.drivers); markSaving(); }
 function saveTransporters() { Store.set(STORE_KEYS.transporters, APP.transporters); markSaving(); }
+function saveAreas() { Store.set(STORE_KEYS.areas, APP.areas); markSaving(); }
 function saveSettings() { Store.set(STORE_KEYS.settings, APP.settings); markSaving(); }
 
 function renderAll() {
@@ -115,6 +132,7 @@ function renderAll() {
   renderExportRegister();
   renderDriverTable();
   renderTransporterTable();
+  renderAreaTable();
   loadSettingsForm();
 }
 
@@ -201,7 +219,9 @@ function closeModal(id) { document.getElementById(id).hidden = true; }
 function renderMasterOptions() {
   const activeDrivers = APP.drivers.filter(d => d.status !== "Inactive");
   const activeTransporters = APP.transporters.filter(t => t.status !== "Inactive");
-  const areas = [...new Set(APP.records.map(r => r.area).filter(Boolean))].sort();
+  const activeAreaNames = APP.areas.filter(a => a.status !== "Inactive").map(a => a.name);
+  const recordAreaNames = APP.records.map(r => r.area).filter(Boolean);
+  const areas = [...new Set([...activeAreaNames, ...recordAreaNames])].sort();
 
   // Filter bar selects
   fillSelect("fDriver", activeDrivers.map(d => d.name), "All Drivers");
@@ -1276,6 +1296,8 @@ function setupMastersPage() {
   document.getElementById("btnSaveDriver").addEventListener("click", saveDriverFromModal);
   document.getElementById("btnAddTransporter").addEventListener("click", () => openTransporterModal(null));
   document.getElementById("btnSaveTransporter").addEventListener("click", saveTransporterFromModal);
+  document.getElementById("btnAddArea").addEventListener("click", () => openAreaModal(null));
+  document.getElementById("btnSaveArea").addEventListener("click", saveAreaFromModal);
 }
 
 function renderDriverTable() {
@@ -1408,6 +1430,67 @@ function saveTransporterFromModal() {
   renderTransporterTable();
   renderMasterOptions();
   closeModal("modalTransporter");
+}
+
+function renderAreaTable() {
+  const tbody = document.getElementById("areaBody");
+  tbody.innerHTML = APP.areas.map(a => `
+    <tr>
+      <td>${escapeHtml(a.name)}</td>
+      <td>${a.status === "Active" ? '<span class="badge badge-exported">Active</span>' : '<span class="badge badge-pending">Inactive</span>'}</td>
+      <td class="col-actions">
+        <div class="cell-actions">
+          <button class="icon-btn btn-sm" data-edit="${a.id}" title="Edit">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
+          <button class="icon-btn btn-sm" data-del="${a.id}" title="Delete">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          </button>
+        </div>
+      </td>
+    </tr>`).join("") || `<tr><td colspan="3" style="text-align:center;color:var(--ink-500);padding:20px;">No areas yet.</td></tr>`;
+
+  tbody.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => openAreaModal(b.dataset.edit)));
+  tbody.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => {
+    APP.pendingDeleteFn = () => {
+      APP.areas = APP.areas.filter(a => a.id !== b.dataset.del);
+      saveAreas();
+      renderAreaTable();
+      renderMasterOptions();
+      showToast("Area removed.", "success");
+    };
+    document.getElementById("modalDeleteText").textContent = "This area will be removed from the master list. Records that already use it are not affected.";
+    openModal("modalDelete");
+  }));
+}
+
+function openAreaModal(id) {
+  APP.editingAreaId = id;
+  const a = id ? APP.areas.find(x => x.id === id) : null;
+  document.getElementById("modalAreaTitle").textContent = a ? "Edit Area" : "Add Area";
+  document.getElementById("areaName").value = a ? a.name : "";
+  document.getElementById("areaStatus").value = a ? a.status : "Active";
+  openModal("modalArea");
+}
+
+function saveAreaFromModal() {
+  const name = document.getElementById("areaName").value.trim().toUpperCase();
+  if (!name) { showToast("Area name is required.", "error"); return; }
+  const dupe = APP.areas.find(a => a.name.toUpperCase() === name && a.id !== APP.editingAreaId);
+  if (dupe) { showToast(`"${name}" already exists in the areas list.`, "error"); return; }
+
+  const data = { name, status: document.getElementById("areaStatus").value };
+  if (APP.editingAreaId) {
+    Object.assign(APP.areas.find(a => a.id === APP.editingAreaId), data);
+    showToast("Area updated.", "success");
+  } else {
+    APP.areas.push({ id: uid("area"), ...data });
+    showToast("Area added.", "success");
+  }
+  saveAreas();
+  renderAreaTable();
+  renderMasterOptions();
+  closeModal("modalArea");
 }
 
 /* =========================================================
@@ -1726,8 +1809,6 @@ function exportExcel(scope) {
     "EXPORT STATUS": r.exportStatus,
   }));
 
-  //dispatch section
-
   const filename = `dispatch-records-${scope}-${todayISO()}.xlsx`;
 
   if (typeof XLSX !== "undefined") {
@@ -1741,7 +1822,7 @@ function exportExcel(scope) {
     const csv = [headers.join(",")]
       .concat(data.map(row => headers.map(h => `"${String(row[h] ?? "").replace(/"/g, '""')}"`).join(",")))
       .join("\n");
-    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });  
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url; a.download = filename.replace(".xlsx", ".csv");

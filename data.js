@@ -19,6 +19,16 @@ const SEED_TRANSPORTERS = [
   { id: "trn_6", name: "PANKAJ SAMIR TRANS.", mode: "Common Transport", contact: "", status: "Active" },
 ];
 
+const SEED_AREAS = [
+  { id: "area_1", name: "MANDLA", status: "Active" },
+  { id: "area_2", name: "JABALPUR", status: "Active" },
+  { id: "area_3", name: "MIRJAPUR", status: "Active" },
+  { id: "area_4", name: "JASHPUR", status: "Active" },
+  { id: "area_5", name: "SIVNI", status: "Active" },
+  { id: "area_6", name: "AMRAWATI", status: "Active" },
+  { id: "area_7", name: "BHATAPARA", status: "Active" },
+];
+
 /* Dispatch record fields:
    id, srlNo, dateBooking, dateEntry, party, area, invNo, bundles,
    transport, bultyNo, amount, voucherSrlNo, voucherNo,

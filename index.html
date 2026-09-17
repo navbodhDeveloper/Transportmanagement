@@ -338,6 +338,7 @@
         <div class="tabs" id="masterTabs">
           <button class="tab is-active" data-tab="drivers">Drivers</button>
           <button class="tab" data-tab="transporters">Transporters</button>
+          <button class="tab" data-tab="areas">Areas</button>
         </div>
 
         <div class="tab-panel is-active" id="tab-drivers">
@@ -365,6 +366,21 @@
               <table class="sheet-table" id="transporterTable">
                 <thead><tr><th>TRANSPORTER NAME</th><th>TRANSPORT MODE</th><th>CONTACT</th><th>STATUS</th><th class="col-actions">ACTIONS</th></tr></thead>
                 <tbody id="transporterBody"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+        <div class="tab-panel" id="tab-areas">
+          <div class="action-bar"><button class="btn btn-primary" id="btnAddArea">
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+            Add Area
+          </button></div>
+          <div class="panel sheet-panel">
+            <div class="table-scroll">
+              <table class="sheet-table" id="areaTable">
+                <thead><tr><th>AREA / CITY NAME</th><th>STATUS</th><th class="col-actions">ACTIONS</th></tr></thead>
+                <tbody id="areaBody"></tbody>
               </table>
             </div>
           </div>
@@ -560,6 +576,28 @@
   </div>
 </div>
 
+<!-- ============ MODAL: Add/Edit Area ============ -->
+<div class="modal-overlay" id="modalArea" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalAreaTitle">
+    <div class="modal-head">
+      <h2 id="modalAreaTitle">Add Area</h2>
+      <button class="icon-btn" data-close-modal="modalArea" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-grid">
+        <div class="field"><label for="areaName">Area / City Name</label><input type="text" id="areaName"></div>
+        <div class="field"><label for="areaStatus">Status</label>
+          <select id="areaStatus"><option>Active</option><option>Inactive</option></select>
+        </div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalArea">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveArea">Save Area</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ MODAL: Report Viewer / Print Preview ============ -->
 <div class="modal-overlay" id="modalReport" hidden>
   <div class="modal modal-report" role="dialog" aria-modal="true" aria-labelledby="modalReportTitle">
@@ -597,9 +635,6 @@
     </div>
   </div>
 </div>
-
-
-
 
 <!-- ============ MODAL: Reset confirm ============ -->
 <div class="modal-overlay" id="modalReset" hidden>
