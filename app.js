@@ -35,7 +35,8 @@ const APP = {
   editingDriverId: null,
   editingTransporterId: null,
   editingAreaId: null,
-  editingExportNo: null,
+  selectedExports: new Set(),
+  viewingExportNo: null,
 };
 
 /* ================= INIT ================= */
@@ -379,6 +380,7 @@ function setupDispatchPage() {
 
   // Report print
   document.getElementById("btnPrintReport").addEventListener("click", () => window.print());
+  document.getElementById("btnSaveReportComment").addEventListener("click", saveReportComment);
 }
 
 function setupExportExcelDropdown() {
@@ -601,9 +603,11 @@ function startCellEdit(td, record, field, type) {
     }
     record[field] = val;
     saveRecords();
+    syncRecordFieldToExport(record, field);
     renderMasterOptions();
     renderDispatchTable();
     renderDashboard();
+    renderExportRegister();
     if (moveDir) focusCell(record.id, field, moveDir);
   }
 
@@ -740,8 +744,12 @@ function saveRecordFromModal() {
 
   if (APP.editingRecordId) {
     const rec = APP.records.find(r => r.id === APP.editingRecordId);
+    const before = { ...rec };
     Object.assign(rec, data);
-    showToast("Changes saved.", "success");
+    SYNCABLE_REPORT_FIELDS.forEach(f => {
+      if (String(before[f] ?? "") !== String(rec[f] ?? "")) syncRecordFieldToExport(rec, f);
+    });
+    showToast(rec.exportNo ? "Changes saved. Already-exported report updated too." : "Changes saved.", "success");
   } else {
     const nextSrl = APP.records.reduce((m, r) => Math.max(m, toNum(r.srlNo)), 0) + 1;
     APP.records.push({
@@ -758,6 +766,7 @@ function saveRecordFromModal() {
   closeModal("modalRecord");
   renderDispatchTable();
   renderDashboard();
+  renderExportRegister();
 }
 
 function duplicateRecord(id) {
@@ -896,6 +905,18 @@ function startExportFlow() {
       <div id="exChargesContainer"></div>
       <button type="button" class="btn btn-secondary btn-sm" id="btnAddCharge">+ Add Charge</button>
     </div>
+    <div class="field">
+      <label class="checkbox-label"><input type="checkbox" id="exRailwayChargeToggle"> Add Railway Bundle Handling Charge (loading + marking + scanning)</label>
+      <div id="exRailwayChargeRow" class="railway-charge-row" hidden>
+        <span>${formatNumber(batch.included.reduce((s, r) => s + toNum(r.bundles), 0))} bundles ×</span>
+        <input type="number" id="exRailwayRate" min="0" step="0.01" placeholder="Rate per bundle">
+        <span id="exRailwayComputedAmount">= ₹0.00</span>
+      </div>
+    </div>
+    <div class="field">
+      <label for="exComment">Comment / Remark (optional)</label>
+      <textarea id="exComment" rows="2" placeholder="e.g. Driver arrived late, extra charge waived, etc."></textarea>
+    </div>
     ${remainingCount > 0 ? `<div class="export-warning">Record ${escapeHtml(batch.excluded[0].party || "")} (SRL ${batch.excluded[0].srlNo}) will not be included because adding it would exceed the ${formatINR(limit)} limit.</div>` : ""}
   `;
 
@@ -912,6 +933,17 @@ function startExportFlow() {
     const removeBtn = e.target.closest(".charge-remove");
     if (removeBtn) removeBtn.closest(".charge-row").remove();
   });
+
+  const railwayTotalBundles = batch.included.reduce((s, r) => s + toNum(r.bundles), 0);
+  const railwayToggle = document.getElementById("exRailwayChargeToggle");
+  const railwayRow = document.getElementById("exRailwayChargeRow");
+  const railwayRate = document.getElementById("exRailwayRate");
+  const railwayComputed = document.getElementById("exRailwayComputedAmount");
+  function updateRailwayComputed() {
+    railwayComputed.textContent = "= " + formatINR(railwayTotalBundles * toNum(railwayRate.value));
+  }
+  railwayToggle.addEventListener("change", () => { railwayRow.hidden = !railwayToggle.checked; updateRailwayComputed(); });
+  railwayRate.addEventListener("input", updateRailwayComputed);
 
   openModal("modalExportPreview");
 }
@@ -948,6 +980,53 @@ function getDriverTypeLabel(name) {
   return d ? `${d.name} (${d.type.toUpperCase()})` : name;
 }
 
+function computeDriverLabel(rows) {
+  const driverNames = [...new Set(rows.map(r => r.driver).filter(Boolean))];
+  return driverNames.length === 1 ? getDriverTypeLabel(driverNames[0]) : (driverNames.length > 1 ? "Multiple" : "—");
+}
+function computeModeLabel(rows) {
+  const modes = [...new Set(rows.map(r => getModeForTransportName(r.transport)).filter(Boolean))];
+  return modes.length === 1 ? modes[0] : (modes.length > 1 ? "Mixed" : "—");
+}
+
+// Fields that appear on a printed Sales Expenses report — only these are worth
+// pushing into an already-generated export when the source record is corrected.
+const SYNCABLE_REPORT_FIELDS = ["party", "area", "invNo", "bundles", "transport", "bultyNo", "amount", "driver", "dateBooking"];
+
+// If a record has already been exported and one of its report-visible fields is
+// corrected afterwards, push that correction into the saved report snapshot too,
+// and flag the field so the report visibly shows it was fixed after export.
+function syncRecordFieldToExport(record, field) {
+  if (!record.exportNo || !SYNCABLE_REPORT_FIELDS.includes(field)) return;
+  const exp = APP.exports.find(e => e.exportNo === record.exportNo);
+  if (!exp || !exp.reportData) return;
+  // Exports created before this feature don't have a row.id yet — fall back to
+  // matching by SRL No (still unique within one export) and backfill the id.
+  let row = exp.reportData.rows.find(r => r.id === record.id);
+  if (!row) row = exp.reportData.rows.find(r => !r.id && r.srlNo === record.srlNo);
+  if (!row) return;
+  if (!row.id) row.id = record.id;
+
+  const newVal = (field === "bundles" || field === "amount") ? toNum(record[field]) : record[field];
+  if (row[field] === newVal) return;
+
+  row[field] = newVal;
+  row.editedFields = row.editedFields || [];
+  if (!row.editedFields.includes(field)) row.editedFields.push(field);
+
+  const rd = exp.reportData;
+  rd.totalBundles = rd.rows.reduce((s, r) => s + toNum(r.bundles), 0);
+  rd.totalAmount = rd.rows.reduce((s, r) => s + toNum(r.amount), 0);
+  rd.grandTotal = rd.totalAmount + toNum(rd.parCharges);
+  rd.driverLabel = computeDriverLabel(rd.rows);
+
+  exp.totalAmount = rd.totalAmount;
+  exp.driver = rd.driverLabel;
+  exp.transportMode = computeModeLabel(rd.rows);
+
+  saveExports();
+}
+
 function confirmExport() {
   const batch = APP.pendingExportBatch;
   if (!batch || batch.included.length === 0) return;
@@ -957,11 +1036,13 @@ function confirmExport() {
   const exportDate = todayISO();
 
   const rows = batch.included.map((r, idx) => ({
+    id: r.id,
     seNo: idx + 1,
     srlNo: r.srlNo,
     party: r.party, area: r.area, invNo: r.invNo, bundles: toNum(r.bundles),
     transport: r.transport, bultyNo: r.bultyNo, amount: toNum(r.amount),
     driver: r.driver, dateBooking: r.dateBooking,
+    editedFields: [],
   }));
 
   const totalBundles = rows.reduce((s, r) => s + r.bundles, 0);
@@ -971,13 +1052,27 @@ function confirmExport() {
     label: row.querySelector(".charge-label").value.trim(),
     amount: toNum(row.querySelector(".charge-amount").value),
   })).filter(c => c.label && c.amount > 0);
+
+  const railwayToggleEl = document.getElementById("exRailwayChargeToggle");
+  if (railwayToggleEl && railwayToggleEl.checked) {
+    const rate = toNum(document.getElementById("exRailwayRate").value);
+    if (rate > 0) {
+      charges.push({
+        label: "Railway Bundle Handling Charge",
+        description: "Booking charges from bundle publication to Railways including loading+marking+scanning charges.",
+        amount: totalBundles * rate,
+        formula: `${totalBundles}*${rate}`,
+      });
+    }
+  }
+
   const parCharges = charges.reduce((s, c) => s + c.amount, 0);
   const grandTotal = totalAmount + parCharges;
+  const commentInput = document.getElementById("exComment");
+  const comment = commentInput ? commentInput.value.trim() : "";
 
-  const driverNames = [...new Set(rows.map(r => r.driver).filter(Boolean))];
-  const driverLabel = driverNames.length === 1 ? getDriverTypeLabel(driverNames[0]) : (driverNames.length > 1 ? "Multiple" : "—");
-  const modes = [...new Set(rows.map(r => getModeForTransportName(r.transport)).filter(Boolean))];
-  const modeLabel = modes.length === 1 ? modes[0] : (modes.length > 1 ? "Mixed" : "—");
+  const driverLabel = computeDriverLabel(rows);
+  const modeLabel = computeModeLabel(rows);
   const bookingDates = rows.map(r => r.dateBooking).filter(Boolean).sort();
   const bookingDate = bookingDates.length ? bookingDates[0] : exportDate;
 
@@ -990,7 +1085,7 @@ function confirmExport() {
     reportData: {
       exportNo, voNo, exportDate, bookingDate,
       rows, totalBundles, totalAmount, parCharges, charges, grandTotal,
-      driverLabel, companyName: APP.settings.companyName || "",
+      driverLabel, companyName: APP.settings.companyName || "", comment,
     },
   };
   APP.exports.push(exportRecord);
@@ -1016,7 +1111,13 @@ function confirmExport() {
    EXPORT REGISTER PAGE
    ========================================================= */
 function setupExportRegisterPage() {
-  document.getElementById("btnSaveEditExportNo").addEventListener("click", saveEditExportNo);
+  document.getElementById("selectAllExportsCheck").addEventListener("change", (e) => {
+    const list = [...APP.exports];
+    if (e.target.checked) list.forEach(exp => APP.selectedExports.add(exp.exportNo));
+    else APP.selectedExports.clear();
+    renderExportRegister();
+  });
+  document.getElementById("btnPrintSelectedExports").addEventListener("click", printSelectedExports);
 }
 
 function renderExportRegister() {
@@ -1028,14 +1129,17 @@ function renderExportRegister() {
     tbody.innerHTML = "";
     empty.hidden = false;
     document.getElementById("exportRegisterTable").style.display = "none";
+    document.getElementById("exportSelectionBar").hidden = true;
     return;
   }
   document.getElementById("exportRegisterTable").style.display = "";
+  document.getElementById("exportSelectionBar").hidden = false;
   empty.hidden = true;
 
   tbody.innerHTML = list.map(e => `
     <tr>
-      <td><strong>${e.exportNo}</strong></td>
+      <td class="col-check"><input type="checkbox" class="export-row-check" data-export="${e.exportNo}" ${APP.selectedExports.has(e.exportNo) ? "checked" : ""}></td>
+      <td class="editable-cell" data-field="exportNo" data-export="${e.exportNo}" title="Click to edit"><div class="cell-inner"><strong>${e.exportNo}</strong></div></td>
       <td>${escapeHtml(formatDateDMY(e.exportDate))}</td>
       <td>${e.srlFrom}</td>
       <td>${e.srlTo}</td>
@@ -1043,12 +1147,11 @@ function renderExportRegister() {
       <td class="num-cell">${formatINR(e.totalAmount)}</td>
       <td>${escapeHtml(e.driver)}</td>
       <td>${escapeHtml(e.transportMode)}</td>
-      <td>${e.voNo}</td>
+      <td class="editable-cell" data-field="voNo" data-export="${e.exportNo}" title="Click to edit"><div class="cell-inner">${e.voNo}</div></td>
       <td><span class="badge badge-completed">${escapeHtml(e.status)}</span></td>
-      <td class="col-actions col-actions-wide">
+      <td class="col-actions">
         <div class="cell-actions">
           <button class="btn btn-secondary btn-sm" data-view="${e.exportNo}">View</button>
-          <button class="btn btn-secondary btn-sm" data-edit-no="${e.exportNo}">Edit No.</button>
         </div>
       </td>
     </tr>`).join("");
@@ -1056,42 +1159,106 @@ function renderExportRegister() {
   tbody.querySelectorAll("[data-view]").forEach(btn => {
     btn.addEventListener("click", () => viewExport(Number(btn.dataset.view)));
   });
-  tbody.querySelectorAll("[data-edit-no]").forEach(btn => {
-    btn.addEventListener("click", () => openEditExportNoModal(Number(btn.dataset.editNo)));
+  tbody.querySelectorAll(".export-row-check").forEach(chk => {
+    chk.addEventListener("change", (e) => {
+      const no = Number(chk.dataset.export);
+      if (e.target.checked) APP.selectedExports.add(no); else APP.selectedExports.delete(no);
+      updateExportSelectionInfo();
+    });
   });
+  tbody.querySelectorAll("td.editable-cell").forEach(td => {
+    td.addEventListener("click", () => {
+      if (td.querySelector(".cell-edit-input")) return;
+      const exp = APP.exports.find(x => x.exportNo === Number(td.dataset.export));
+      if (exp) startExportCellEdit(td, exp, td.dataset.field);
+    });
+  });
+
+  updateExportSelectionInfo();
 }
 
-function openEditExportNoModal(exportNo) {
-  APP.editingExportNo = exportNo;
-  document.getElementById("editExportNoInput").value = exportNo;
-  openModal("modalEditExportNo");
+function updateExportSelectionInfo() {
+  const count = APP.selectedExports.size;
+  document.getElementById("exportSelectionInfo").textContent = count > 0 ? `${count} selected` : "";
+  document.getElementById("btnPrintSelectedExports").disabled = count === 0;
+  const allChecked = APP.exports.length > 0 && count === APP.exports.length;
+  const selectAll = document.getElementById("selectAllExportsCheck");
+  if (selectAll) selectAll.checked = allChecked;
 }
 
-function saveEditExportNo() {
-  const newNo = toNum(document.getElementById("editExportNoInput").value);
-  if (!newNo || newNo <= 0) { showToast("Please enter a valid Export No.", "error"); return; }
-  if (newNo !== APP.editingExportNo && APP.exports.some(e => e.exportNo === newNo)) {
-    showToast(`Export No. ${newNo} is already used by another export.`, "error");
-    return;
+function startExportCellEdit(td, exp, field) {
+  const isExportNo = field === "exportNo";
+  const label = isExportNo ? "Export No." : "VO.NO.";
+  td.innerHTML = `<input type="number" min="1" class="cell-edit-input" value="${exp[field]}">`;
+  const input = td.querySelector(".cell-edit-input");
+  input.focus();
+  input.select();
+
+  let committed = false;
+  function commit() {
+    if (committed) return;
+    committed = true;
+    const newVal = toNum(input.value);
+    if (!newVal || newVal <= 0) {
+      showToast(`Please enter a valid ${label}`, "error");
+      renderExportRegister();
+      return;
+    }
+    if (newVal !== exp[field] && APP.exports.some(x => x[field] === newVal)) {
+      showToast(`${label} ${newVal} is already used by another export.`, "error");
+      renderExportRegister();
+      return;
+    }
+    const oldVal = exp[field];
+    exp[field] = newVal;
+    if (exp.reportData) exp.reportData[field] = newVal;
+    if (isExportNo) {
+      APP.records.forEach(r => { if (r.exportNo === oldVal) r.exportNo = newVal; });
+      if (APP.selectedExports.has(oldVal)) { APP.selectedExports.delete(oldVal); APP.selectedExports.add(newVal); }
+      saveRecords();
+    }
+    saveExports();
+    renderExportRegister();
+    showToast(`${label} updated to ${newVal}.`, "success");
   }
-  const exp = APP.exports.find(e => e.exportNo === APP.editingExportNo);
-  if (!exp) return;
-  const oldNo = exp.exportNo;
-  exp.exportNo = newNo;
-  if (exp.reportData) exp.reportData.exportNo = newNo;
-  APP.records.forEach(r => { if (r.exportNo === oldNo) r.exportNo = newNo; });
-  saveExports();
-  saveRecords();
-  closeModal("modalEditExportNo");
-  renderExportRegister();
-  showToast(`Export No. updated to ${newNo}.`, "success");
+
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { e.preventDefault(); committed = true; renderExportRegister(); }
+  });
 }
 
 function viewExport(exportNo) {
   const record = APP.exports.find(e => e.exportNo === exportNo);
   if (!record) return;
+  APP.viewingExportNo = exportNo;
   document.getElementById("modalReportTitle").textContent = `Sales Expenses Report — Export ${exportNo}`;
   document.getElementById("reportPrintArea").innerHTML = buildReportHTML(record.reportData);
+  document.getElementById("reportCommentInput").value = record.reportData.comment || "";
+  document.getElementById("reportCommentBox").hidden = false;
+  openModal("modalReport");
+}
+
+function saveReportComment() {
+  if (!APP.viewingExportNo) return;
+  const exp = APP.exports.find(e => e.exportNo === APP.viewingExportNo);
+  if (!exp) return;
+  exp.reportData.comment = document.getElementById("reportCommentInput").value.trim();
+  saveExports();
+  document.getElementById("reportPrintArea").innerHTML = buildReportHTML(exp.reportData);
+  showToast("Comment saved.", "success");
+}
+
+function printSelectedExports() {
+  const selected = APP.exports
+    .filter(e => APP.selectedExports.has(e.exportNo))
+    .sort((a, b) => a.exportNo - b.exportNo);
+  if (!selected.length) return;
+  APP.viewingExportNo = null;
+  document.getElementById("reportCommentBox").hidden = true;
+  document.getElementById("modalReportTitle").textContent = `Sales Expenses Report — ${selected.length} Exports Combined`;
+  document.getElementById("reportPrintArea").innerHTML = selected.map(e => buildReportHTML(e.reportData)).join("");
   openModal("modalReport");
 }
 
@@ -1101,18 +1268,55 @@ function invNoLines(invNo) {
 }
 
 function buildReportHTML(d) {
-  const rowsHTML = d.rows.map(r => `
-    <tr>
+  const mark = (row, field, html) => (row.editedFields || []).includes(field)
+    ? `<span class="edited-mark" title="Corrected after this report was generated">${html}</span>`
+    : html;
+
+  // When several consecutive rows share the same non-empty Bulty No (e.g. many
+  // small school bundles consolidated into one Railways bilty), merge the
+  // Transport / Bulty No / Amount cells into one and show the combined amount.
+  const groupStartAt = {};
+  const groupSkip = new Set();
+  for (let i = 0; i < d.rows.length;) {
+    const key = (d.rows[i].bultyNo || "").trim();
+    let j = i + 1;
+    if (key) while (j < d.rows.length && (d.rows[j].bultyNo || "").trim() === key) j++;
+    const span = j - i;
+    if (span > 1) {
+      groupStartAt[i] = { span, groupAmount: d.rows.slice(i, j).reduce((s, r) => s + toNum(r.amount), 0) };
+      for (let k = i + 1; k < j; k++) groupSkip.add(k);
+    }
+    i = j;
+  }
+
+  const rowsHTML = d.rows.map((r, idx) => {
+    const rowCommon = `
       <td class="center">${r.seNo}</td>
-      <td class="center">${escapeHtml(formatDateDots(r.dateBooking))}</td>
-      <td>${escapeHtml(r.party)}</td>
-      <td>${escapeHtml(r.area)}</td>
-      <td>${invNoLines(r.invNo)}</td>
-      <td class="center">${formatNumber(r.bundles)}</td>
-      <td>${escapeHtml(r.transport)}</td>
-      <td class="center">${escapeHtml(r.bultyNo)}</td>
-      <td class="num">${formatINR(r.amount).replace("₹", "")}</td>
-    </tr>`).join("");
+      <td class="center">${mark(r, "dateBooking", escapeHtml(formatDateDots(r.dateBooking)))}</td>
+      <td>${mark(r, "party", escapeHtml(r.party))}</td>
+      <td>${mark(r, "area", escapeHtml(r.area))}</td>
+      <td>${mark(r, "invNo", invNoLines(r.invNo))}</td>
+      <td class="center">${mark(r, "bundles", formatNumber(r.bundles))}</td>`;
+
+    if (groupSkip.has(idx)) return `<tr>${rowCommon}</tr>`;
+
+    const g = groupStartAt[idx];
+    if (g) {
+      return `<tr>${rowCommon}
+      <td rowspan="${g.span}">${mark(r, "transport", escapeHtml(r.transport))}</td>
+      <td class="center" rowspan="${g.span}">${mark(r, "bultyNo", escapeHtml(r.bultyNo))}</td>
+      <td class="num" rowspan="${g.span}">${formatINR(g.groupAmount).replace("₹", "")}</td>
+    </tr>`;
+    }
+    return `<tr>${rowCommon}
+      <td>${mark(r, "transport", escapeHtml(r.transport))}</td>
+      <td class="center">${mark(r, "bultyNo", escapeHtml(r.bultyNo))}</td>
+      <td class="num">${mark(r, "amount", formatINR(r.amount).replace("₹", ""))}</td>
+    </tr>`;
+  }).join("");
+
+  const hasEdits = d.rows.some(r => (r.editedFields || []).length > 0);
+  const driverEdited = d.rows.some(r => (r.editedFields || []).includes("driver"));
 
   return `
   <div class="report-sheet">
@@ -1146,8 +1350,8 @@ function buildReportHTML(d) {
       </tr>
       ${(d.charges && d.charges.length) ? d.charges.map((c, i) => `
       <tr>
-        <td colspan="7">${i === 0 ? "Local transport booking cost from publication." : ""}</td>
-        <td class="right">${escapeHtml((c.label || "PAR.CHg").toUpperCase())}</td>
+        <td colspan="7">${escapeHtml(c.description || (i === 0 ? "Local transport booking cost from publication." : ""))}</td>
+        <td class="right">${c.formula ? escapeHtml(c.formula) : escapeHtml((c.label || "PAR.CHg").toUpperCase())}</td>
         <td class="num">${formatINR(c.amount).replace("₹", "")}</td>
       </tr>`).join("") : `
       <tr>
@@ -1161,9 +1365,11 @@ function buildReportHTML(d) {
         <td class="num">${formatINR(d.grandTotal).replace("₹", "")}</td>
       </tr>
       <tr>
-        <td colspan="9" class="report-driver-row">Driver:- ${escapeHtml(d.driverLabel)}</td>
+        <td colspan="9" class="report-driver-row">Driver:- ${driverEdited ? `<span class="edited-mark" title="Corrected after this report was generated">${escapeHtml(d.driverLabel)}</span>` : escapeHtml(d.driverLabel)}</td>
       </tr>
+      ${d.comment ? `<tr><td colspan="9" class="report-comment-row">Remarks:- ${escapeHtml(d.comment)}</td></tr>` : ""}
     </table>
+    ${hasEdits ? `<div class="report-edit-footnote">Highlighted values were corrected in Dispatch Records after this report was first generated.</div>` : ""}
   </div>`;
 }
 

@@ -298,11 +298,20 @@
           </div>
         </div>
 
+        <div class="action-bar" id="exportSelectionBar" hidden>
+          <button class="btn btn-primary" id="btnPrintSelectedExports" disabled>
+            <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 6 2 18 2 18 9"/><path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2"/><rect x="6" y="14" width="12" height="8"/></svg>
+            Print Selected Together
+          </button>
+          <div class="selection-info" id="exportSelectionInfo"></div>
+        </div>
+
         <div class="panel sheet-panel">
           <div class="table-scroll">
             <table class="sheet-table" id="exportRegisterTable">
               <thead>
                 <tr>
+                  <th class="col-check"><input type="checkbox" id="selectAllExportsCheck" title="Select all"></th>
                   <th>EXPORT NO.</th>
                   <th>EXPORT DATE</th>
                   <th>SRL FROM</th>
@@ -607,31 +616,15 @@
     </div>
     <div class="modal-body report-modal-body">
       <div id="reportPrintArea"></div>
+      <div class="report-comment-box no-print" id="reportCommentBox" hidden>
+        <label for="reportCommentInput">Comment / Remark</label>
+        <textarea id="reportCommentInput" rows="2" placeholder="e.g. Driver arrived late, extra charge waived, etc."></textarea>
+        <button type="button" class="btn btn-secondary btn-sm" id="btnSaveReportComment">Save Comment</button>
+      </div>
     </div>
     <div class="modal-foot no-print">
       <button class="btn btn-secondary" data-close-modal="modalReport">Back</button>
       <button class="btn btn-primary" id="btnPrintReport">Print Report</button>
-    </div>
-  </div>
-</div>
-
-<!-- ============ MODAL: Edit Export No. ============ -->
-<div class="modal-overlay" id="modalEditExportNo" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalEditExportNoTitle">
-    <div class="modal-head">
-      <h2 id="modalEditExportNoTitle">Edit Export No.</h2>
-      <button class="icon-btn" data-close-modal="modalEditExportNo" aria-label="Close">✕</button>
-    </div>
-    <div class="modal-body">
-      <div class="field">
-        <label for="editExportNoInput">Export No.</label>
-        <input type="number" id="editExportNoInput" min="1">
-        <p class="field-hint">Must be a number not already used by another export.</p>
-      </div>
-    </div>
-    <div class="modal-foot">
-      <button class="btn btn-secondary" data-close-modal="modalEditExportNo">Cancel</button>
-      <button class="btn btn-primary" id="btnSaveEditExportNo">Save</button>
     </div>
   </div>
 </div>
