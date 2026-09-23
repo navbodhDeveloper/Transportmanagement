@@ -503,7 +503,7 @@ function rowHTML(r) {
     ${cell("dateEntry", escapeHtml(formatDateDMY(r.dateEntry)))}
     ${cell("party", escapeHtml(r.party))}
     ${cell("area", escapeHtml(r.area))}
-    ${cell("invNo", escapeHtml(r.invNo))}
+    ${cell("invNo", escapeHtml(r.invNo) + (r.isRelocation ? ` <span class="badge-mini" title="Relocation / Local Transport leg — duplicate invoice number allowed">R</span>` : ""))}
     ${cell("bundles", formatNumber(r.bundles), "num-cell")}
     ${cell("transport", escapeHtml(r.transport))}
     ${cell("bultyNo", escapeHtml(r.bultyNo))}
@@ -539,6 +539,13 @@ function bindRowEvents() {
         if (td.querySelector(".cell-edit-input")) return;
         const record = APP.records.find(r => r.id === id);
         const field = td.dataset.field;
+        if (field === "amount") {
+          const match = findMatchingBultyRecord(record.bultyNo, record.id);
+          if (match) {
+            showToast(`Amount is locked — Bulty No. "${record.bultyNo}" is shared with another record, and one bilty has one price (${formatINR(match.amount)}). Change the Bulty No. first if this shouldn't be grouped.`, "error");
+            return;
+          }
+        }
         const fieldDef = RECORD_FIELDS.find(f => f.key === field);
         startCellEdit(td, record, field, fieldDef.type);
       });
@@ -594,16 +601,24 @@ function startCellEdit(td, record, field, type) {
       }
     }
     if (field === "invNo") {
-      const dupes = findDuplicateInvoiceNumbers(val, record.id);
+      const dupes = findDuplicateInvoiceNumbers(val, record.id, record.isRelocation);
       if (dupes.length) {
-        showToast(`Invoice No. "${dupes.join(", ")}" already exists on another record. Please use a unique invoice number.`, "error");
+        showToast(`Invoice No. "${dupes.join(", ")}" already exists on another record. Please use a unique invoice number, or mark this record as a Relocation leg via Edit.`, "error");
         renderDispatchTable();
         return;
       }
     }
     record[field] = val;
+    if (field === "bultyNo") {
+      const match = findMatchingBultyRecord(val, record.id);
+      if (match && toNum(record.amount) !== toNum(match.amount)) {
+        record.amount = match.amount;
+        showToast(`Amount auto-set to ${formatINR(match.amount)} to match other records sharing Bulty No. "${val}".`, "success");
+      }
+    }
     saveRecords();
     syncRecordFieldToExport(record, field);
+    if (field === "bultyNo") syncRecordFieldToExport(record, "amount");
     renderMasterOptions();
     renderDispatchTable();
     renderDashboard();
@@ -665,9 +680,46 @@ function openRecordModal(id) {
 
   const grid = document.getElementById("recordFormGrid");
   grid.innerHTML = RECORD_FIELDS.map(f => fieldHTML(f, record)).join("");
+  document.getElementById("rf_isRelocation").checked = record ? !!record.isRelocation : false;
+  setupBultyAmountLock();
   openModal("modalRecord");
   const firstInput = grid.querySelector("input, select");
   if (firstInput) setTimeout(() => firstInput.focus(), 30);
+}
+
+// A Bulty No represents one physical bilty — every record filed under the same
+// Bulty No must share the same price, not a separately-typed amount each time.
+function findMatchingBultyRecord(bultyNo, excludeId) {
+  const key = (bultyNo || "").trim();
+  if (!key) return null;
+  return APP.records.find(r => r.id !== excludeId && (r.bultyNo || "").trim().toLowerCase() === key.toLowerCase()) || null;
+}
+
+function setupBultyAmountLock() {
+  const bultyInput = document.getElementById("rf_bultyNo");
+  const amountInput = document.getElementById("rf_amount");
+  if (!bultyInput || !amountInput) return;
+
+  function refresh() {
+    const match = findMatchingBultyRecord(bultyInput.value, APP.editingRecordId);
+    let hint = document.getElementById("bultyAmountHint");
+    if (match) {
+      amountInput.value = match.amount;
+      amountInput.disabled = true;
+      if (!hint) {
+        hint = document.createElement("p");
+        hint.id = "bultyAmountHint";
+        hint.className = "field-hint";
+        amountInput.closest(".field").appendChild(hint);
+      }
+      hint.textContent = `Locked — this Bulty No. is already used by another record, and one bilty has one shared price (${formatINR(match.amount)}).`;
+    } else {
+      amountInput.disabled = false;
+      if (hint) hint.remove();
+    }
+  }
+  bultyInput.addEventListener("input", refresh);
+  refresh();
 }
 
 function fieldHTML(f, record) {
@@ -701,7 +753,8 @@ function getExistingInvoiceNumbers(excludeRecordId) {
   return set;
 }
 
-function findDuplicateInvoiceNumbers(invNoString, excludeRecordId) {
+function findDuplicateInvoiceNumbers(invNoString, excludeRecordId, skipCheck) {
+  if (skipCheck) return [];
   const existing = getExistingInvoiceNumbers(excludeRecordId);
   const tokens = (invNoString || "").split(",").map(t => t.trim()).filter(Boolean);
   const seenHere = new Set();
@@ -735,9 +788,14 @@ function saveRecordFromModal() {
     data[f.key] = val;
   }
 
-  const dupInvoices = findDuplicateInvoiceNumbers(data.invNo, APP.editingRecordId);
+  data.isRelocation = document.getElementById("rf_isRelocation").checked;
+
+  const bultyMatch = findMatchingBultyRecord(data.bultyNo, APP.editingRecordId);
+  if (bultyMatch) data.amount = bultyMatch.amount;
+
+  const dupInvoices = findDuplicateInvoiceNumbers(data.invNo, APP.editingRecordId, data.isRelocation);
   if (dupInvoices.length) {
-    showToast(`Invoice No. "${dupInvoices.join(", ")}" already exists on another record. Please use a unique invoice number.`, "error");
+    showToast(`Invoice No. "${dupInvoices.join(", ")}" already exists on another record. Please use a unique invoice number, or check "Relocation / Local Transport leg" if this is intentional.`, "error");
     document.getElementById("rf_invNo").focus();
     return;
   }
@@ -980,6 +1038,20 @@ function getDriverTypeLabel(name) {
   return d ? `${d.name} (${d.type.toUpperCase()})` : name;
 }
 
+// Records sharing a Bulty No represent one physical bilty with one price — count
+// that shared amount once, not once per record, when totalling what to bill.
+function computeDedupedAmount(rows) {
+  let total = 0;
+  const seenBulty = new Set();
+  rows.forEach(r => {
+    const key = (r.bultyNo || "").trim().toLowerCase();
+    if (key && seenBulty.has(key)) return;
+    if (key) seenBulty.add(key);
+    total += toNum(r.amount);
+  });
+  return total;
+}
+
 function computeDriverLabel(rows) {
   const driverNames = [...new Set(rows.map(r => r.driver).filter(Boolean))];
   return driverNames.length === 1 ? getDriverTypeLabel(driverNames[0]) : (driverNames.length > 1 ? "Multiple" : "—");
@@ -1016,7 +1088,7 @@ function syncRecordFieldToExport(record, field) {
 
   const rd = exp.reportData;
   rd.totalBundles = rd.rows.reduce((s, r) => s + toNum(r.bundles), 0);
-  rd.totalAmount = rd.rows.reduce((s, r) => s + toNum(r.amount), 0);
+  rd.totalAmount = computeDedupedAmount(rd.rows);
   rd.grandTotal = rd.totalAmount + toNum(rd.parCharges);
   rd.driverLabel = computeDriverLabel(rd.rows);
 
@@ -1046,7 +1118,7 @@ function confirmExport() {
   }));
 
   const totalBundles = rows.reduce((s, r) => s + r.bundles, 0);
-  const totalAmount = rows.reduce((s, r) => s + r.amount, 0);
+  const totalAmount = computeDedupedAmount(rows);
   // Parking / local transport charges — one or more named line items entered at export time
   const charges = Array.from(document.querySelectorAll("#exChargesContainer .charge-row")).map(row => ({
     label: row.querySelector(".charge-label").value.trim(),
@@ -1283,7 +1355,7 @@ function buildReportHTML(d) {
     if (key) while (j < d.rows.length && (d.rows[j].bultyNo || "").trim() === key) j++;
     const span = j - i;
     if (span > 1) {
-      groupStartAt[i] = { span, groupAmount: d.rows.slice(i, j).reduce((s, r) => s + toNum(r.amount), 0) };
+      groupStartAt[i] = { span, groupAmount: toNum(d.rows[i].amount) };
       for (let k = i + 1; k < j; k++) groupSkip.add(k);
     }
     i = j;
@@ -2013,6 +2085,7 @@ function exportExcel(scope) {
     "VOUCHER NO": r.voucherNo,
     "DRIVER": r.driver,
     "EXPORT STATUS": r.exportStatus,
+    "RELOCATION LEG": r.isRelocation ? "Yes" : "No",
   }));
 
   const filename = `dispatch-records-${scope}-${todayISO()}.xlsx`;
