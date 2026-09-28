@@ -43,14 +43,20 @@
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M9 15l2 2 4-4"/></svg>
         <span>Export Register</span>
       </button>
-      <button class="nav-item" data-page="masters">
+       <button class="nav-item" data-page="cargo">
+        <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="1" y="6" width="14" height="10" rx="1"/><path d="M15 9h4l3 3v4h-7z"/><circle cx="6" cy="18" r="2"/><circle cx="18" cy="18" r="2"/></svg>
+        <span>Cargo Entry</span>
+      </button>
+       <button class="nav-item" data-page="masters">
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20.59 13.41 13.42 20.6a2 2 0 0 1-2.83 0L2 12V2h10l8.59 8.59a2 2 0 0 1 0 2.82Z"/><circle cx="7" cy="7" r="1.5"/></svg>
         <span>Masters</span>
       </button>
+      b  
       <button class="nav-item" data-page="settings">
         <svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.6 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.6a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         <span>Settings</span>
       </button>
+     
     </nav>
 
     <div class="sidebar-foot">
@@ -176,6 +182,14 @@
           </div>
         </div>
 
+        <!-- Section tabs -->
+        <div class="view-tabs" id="viewTabs">
+          <button type="button" class="view-tab active" data-view="all">All Records <span class="view-count">0</span></button>
+          <button type="button" class="view-tab" data-view="regular">Regular <span class="view-count">0</span></button>
+          <button type="button" class="view-tab" data-view="railways">Railways <span class="view-count">0</span></button>
+          <button type="button" class="view-tab" data-view="relocation">Relocation <span class="view-count">0</span></button>
+        </div>
+
         <!-- Action bar -->
         <div class="action-bar">
           <button class="btn btn-primary" id="btnAddRow">
@@ -218,6 +232,7 @@
                   <th>TRANSPORT</th>
                   <th>BULTY NO</th>
                   <th class="sortable" data-key="amount">AMOUNT</th>
+                  <th>CHARGES<br>(WITH EXPORT)</th>
                   <th>VOUCHER SRL NO.</th>
                   <th>VOUCHER NO</th>
                   <th>DRIVER</th>
@@ -391,6 +406,65 @@
                 <thead><tr><th>AREA / CITY NAME</th><th>STATUS</th><th class="col-actions">ACTIONS</th></tr></thead>
                 <tbody id="areaBody"></tbody>
               </table>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- ===================== CARGO ENTRY ===================== -->
+      <section class="page" id="page-cargo">
+        <div class="page-head">
+          <div>
+            <h1>Cargo Entry</h1>
+            <p class="page-desc">Add bilty entries for each cargo company and make its Sales Expenses report.</p>
+          </div>
+        </div>
+
+        <div class="view-tabs" id="cargoTabs"></div>
+
+        <div class="empty-state" id="cargoNone" hidden>
+          <p><strong>No cargo added yet.</strong></p>
+          <p>Click "+ Add Cargo" above to add your first cargo company.</p>
+        </div>
+
+        <div id="cargoWrap">
+          <div class="action-bar">
+            <button class="btn btn-primary" id="btnAddCargoEntry">+ Add Entry</button>
+            <button class="btn btn-accent" id="btnMakeCargoReport">Make Report</button>
+            <button class="btn btn-secondary" id="btnEditCargo">Edit Cargo</button>
+            <button class="btn btn-secondary" id="btnDeleteCargo">Delete Cargo</button>
+            <div class="selection-info" id="cargoSelectionInfo"></div>
+          </div>
+
+          <div class="panel sheet-panel">
+            <div class="table-scroll">
+              <table class="sheet-table" id="cargoTable">
+                <thead id="cargoHead"></thead>
+                <tbody id="cargoRows"></tbody>
+              </table>
+              <div class="empty-state" id="cargoEmpty" hidden>
+                <p><strong>No entries yet.</strong></p>
+                <p>Click "+ Add Entry" to add the first bilty for this cargo.</p>
+              </div>
+            </div>
+          </div>
+
+          <div class="summary-bar">
+            <div class="summary-item"><span class="summary-label">Total Entries</span><span class="summary-value" id="cargoSumEntries">0</span></div>
+            <div class="summary-item"><span class="summary-label">Total Bundles</span><span class="summary-value" id="cargoSumBundles">0</span></div>
+            <div class="summary-item"><span class="summary-label">Total Amount</span><span class="summary-value" id="cargoSumAmount">₹0.00</span></div>
+          </div>
+
+          <h2 class="cargo-subhead">Saved Reports</h2>
+          <div class="panel sheet-panel">
+            <div class="table-scroll">
+              <table class="sheet-table">
+                <thead><tr><th>REPORT NO.</th><th>REPORT DATE</th><th>BUNDLE BOOKING DATE</th><th>ENTRIES</th><th>TOTAL AMOUNT</th><th class="col-actions">ACTIONS</th></tr></thead>
+                <tbody id="cargoReportsBody"></tbody>
+              </table>
+              <div class="empty-state" id="cargoReportsEmpty" hidden>
+                <p>No reports made yet for this cargo.</p>
+              </div>
             </div>
           </div>
         </div>
@@ -635,6 +709,75 @@
   </div>
 </div>
 
+<!-- ============ MODAL: Cargo (add / edit) ============ -->
+<div class="modal-overlay" id="modalCargo" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalCargoTitle">
+    <div class="modal-head">
+      <h2 id="modalCargoTitle">Add Cargo</h2>
+      <button class="icon-btn" data-close-modal="modalCargo" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-grid cargo-form-grid">
+        <div class="field"><label for="cgName">Cargo Name</label><input type="text" id="cgName" placeholder="e.g. PRAKASH CARGO"></div>
+        <div class="field cargo-wide"><label for="cgMessage">Message on the report</label><input type="text" id="cgMessage" placeholder="e.g. PRAKASH CARGO BOOKING CHARGES FROM PUBLICATION."></div>
+        <div class="field cargo-wide"><label class="checkbox-label"><input type="checkbox" id="cgShowDate"> Show "Bundle Booking Date" column on the report</label></div>
+        <div class="field cargo-wide"><label class="checkbox-label"><input type="checkbox" id="cgHasMarking"> This cargo has a Marking Charge (adds Marking Charge + Total Amount columns)</label></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalCargo">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveCargo">Save Cargo</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Cargo entry (add / edit) ============ -->
+<div class="modal-overlay" id="modalCargoEntry" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalCargoEntryTitle">
+    <div class="modal-head">
+      <h2 id="modalCargoEntryTitle">Add Entry</h2>
+      <button class="icon-btn" data-close-modal="modalCargoEntry" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-grid">
+        <div class="field"><label for="ceDate">Date of Booking</label><input type="date" id="ceDate"></div>
+        <div class="field"><label for="ceParty">Party / School Name</label><input type="text" id="ceParty"></div>
+        <div class="field"><label for="ceArea">Area</label><input type="text" id="ceArea" list="areaListOptions"></div>
+        <div class="field"><label for="ceInvNo">Inv. No.</label><input type="text" id="ceInvNo" placeholder="Separate several with commas"></div>
+        <div class="field"><label for="ceBundles">No of Bundles</label><input type="number" id="ceBundles" min="0" step="1"></div>
+        <div class="field"><label for="ceBilty">Bilty No</label><input type="text" id="ceBilty"></div>
+        <div class="field"><label for="ceAmount">Amount (₹)</label><input type="number" id="ceAmount" min="0" step="0.01"></div>
+        <div class="field" id="ceMarkingField"><label for="ceMarking">Marking Charge (₹)</label><input type="number" id="ceMarking" min="0" step="0.01"></div>
+        <div class="field" id="ceTotalField"><label>Total Amount</label><div class="cargo-total-box" id="ceTotal">₹0.00</div></div>
+      </div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalCargoEntry">Cancel</button>
+      <button class="btn btn-primary" id="btnSaveCargoEntry">Save Entry</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ MODAL: Make cargo report ============ -->
+<div class="modal-overlay" id="modalCargoReport" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalCargoReportTitle">
+    <div class="modal-head">
+      <h2 id="modalCargoReportTitle">Make Cargo Report</h2>
+      <button class="icon-btn" data-close-modal="modalCargoReport" aria-label="Close">✕</button>
+    </div>
+    <div class="modal-body">
+      <div id="cargoReportSummary" class="export-summary-grid"></div>
+      <div class="field"><label for="crDate">Report Date</label><input type="date" id="crDate"></div>
+      <div class="field"><label for="crBooking">Bundle Booking Date (shown under the title)</label><input type="text" id="crBooking" placeholder="e.g. 15,16 &amp; 17.09.2026"></div>
+      <div class="field"><label for="crMessage">Message on the report</label><input type="text" id="crMessage"></div>
+    </div>
+    <div class="modal-foot">
+      <button class="btn btn-secondary" data-close-modal="modalCargoReport">Cancel</button>
+      <button class="btn btn-accent" id="btnConfirmCargoReport">Make Report</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ MODAL: Reset confirm ============ -->
 <div class="modal-overlay" id="modalReset" hidden>
   <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalResetTitle">
@@ -660,6 +803,11 @@
 <datalist id="transporterListOptions"></datalist>
 <datalist id="areaListOptions"></datalist>
 <datalist id="modeListOptions"></datalist>
+<datalist id="chargeMessageOptions">
+  <option value="Local transport booking cost from publication.">
+  <option value="CHARGES OF RELOCATING FROM ">
+  <option value="Booking charges from bundle publication to Railways including loading+marking+scanning charges.">
+</datalist>
 <datalist id="chargeLabelOptions">
   <option value="Bus Parking Charge">
   <option value="Train Parking Charge">

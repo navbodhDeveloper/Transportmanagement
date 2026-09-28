@@ -27,6 +27,7 @@ const APP = {
   settings: {},
   filters: { from: "", to: "", driver: "", mode: "", transporter: "", area: "", search: "" },
   sort: { key: "srlNo", dir: "asc" },
+  view: "all", // all | regular | railways | relocation
   selected: new Set(),
   pendingDeleteFn: null,
   pendingImportRows: null,
@@ -37,6 +38,15 @@ const APP = {
   editingAreaId: null,
   selectedExports: new Set(),
   viewingExportNo: null,
+  // Cargo Entry page
+  cargos: [],
+  cargoEntries: [],
+  cargoReports: [],
+  activeCargoId: null,
+  editingCargoId: null,
+  editingCargoEntryId: null,
+  cargoSelected: new Set(),
+  pendingCargoPool: null,
 };
 
 /* ================= INIT ================= */
@@ -44,6 +54,7 @@ document.addEventListener("DOMContentLoaded", init);
 
 function init() {
   loadState();
+  loadCargoState();
   setupNav();
   setupModals();
   setupDispatchPage();
@@ -51,6 +62,7 @@ function init() {
   setupMastersPage();
   setupSettingsPage();
   setupExportRegisterPage();
+  setupCargoPage();
   renderAll();
 }
 
@@ -134,6 +146,7 @@ function renderAll() {
   renderDriverTable();
   renderTransporterTable();
   renderAreaTable();
+  renderCargoPage();
   loadSettingsForm();
 }
 
@@ -182,6 +195,7 @@ const PAGE_TITLES = {
   exports: ["Export Register", "Book Publication & Distribution System"],
   masters: ["Masters", "Book Publication & Distribution System"],
   settings: ["Settings", "Book Publication & Distribution System"],
+  cargo: ["Cargo Entry", "Book Publication & Distribution System"],
 };
 
 function showPage(name) {
@@ -272,7 +286,7 @@ function fillDatalist(id, values) {
 function renderDashboard() {
   const records = APP.records;
   const totalBundles = records.reduce((s, r) => s + toNum(r.bundles), 0);
-  const totalAmount = records.reduce((s, r) => s + toNum(r.amount), 0);
+  const totalAmount = computeDedupedAmount(records); // shared bilty counted once
   const exported = records.filter(r => r.exportStatus === "Exported").length;
   const pending = records.length - exported;
 
@@ -329,6 +343,12 @@ function statusBadge(status) {
 function setupDispatchPage() {
   document.getElementById("btnApplyFilter").addEventListener("click", applyFiltersFromInputs);
   document.getElementById("btnResetFilter").addEventListener("click", resetFilters);
+  document.getElementById("viewTabs").addEventListener("click", (e) => {
+    const btn = e.target.closest(".view-tab");
+    if (!btn) return;
+    APP.view = btn.dataset.view;
+    renderDispatchTable();
+  });
   document.getElementById("btnEmptyReset").addEventListener("click", resetFilters);
   document.getElementById("fSearch").addEventListener("input", debounce(applyFiltersFromInputs, 300));
   ["fFromDate", "fToDate", "fDriver", "fMode", "fTransporter", "fArea"].forEach(id => {
@@ -432,9 +452,41 @@ function resetFilters() {
   renderDispatchTable();
 }
 
-function getFilteredRecords() {
+// Which section a record belongs to (used by the tabs above the table):
+//  Relocation = flagged as a relocation / local transport leg
+//  Railways   = transport mode is Train, OR shares a Bulty No with another record
+//  Regular    = everything else
+function getBultyCounts() {
+  const counts = {};
+  APP.records.forEach(r => {
+    const k = (r.bultyNo || "").trim().toLowerCase();
+    if (k) counts[k] = (counts[k] || 0) + 1;
+  });
+  return counts;
+}
+function getRecordCategory(r, bultyCounts) {
+  if (r.isRelocation) return "relocation";
+  const k = (r.bultyNo || "").trim().toLowerCase();
+  if (getModeForTransportName(r.transport) === "Train" || (k && bultyCounts[k] > 1)) return "railways";
+  return "regular";
+}
+
+function renderViewTabs() {
+  const bc = getBultyCounts();
+  const counts = { all: 0, regular: 0, railways: 0, relocation: 0 };
+  getFilteredRecords(true).forEach(r => { counts.all++; counts[getRecordCategory(r, bc)]++; });
+  document.querySelectorAll("#viewTabs .view-tab").forEach(btn => {
+    const v = btn.dataset.view;
+    btn.classList.toggle("active", v === APP.view);
+    btn.querySelector(".view-count").textContent = counts[v];
+  });
+}
+
+function getFilteredRecords(ignoreView) {
   const f = APP.filters;
+  const bultyCounts = (!ignoreView && APP.view !== "all") ? getBultyCounts() : null;
   let out = APP.records.filter(r => {
+    if (bultyCounts && getRecordCategory(r, bultyCounts) !== APP.view) return false;
     if (f.from && (r.dateBooking || "") < f.from) return false;
     if (f.to && (r.dateBooking || "") > f.to) return false;
     if (f.driver && r.driver !== f.driver) return false;
@@ -479,19 +531,62 @@ function renderDispatchTable() {
   } else {
     document.getElementById("sheetTable").style.display = "";
     emptyState.hidden = true;
-    tbody.innerHTML = rows.map(r => rowHTML(r)).join("");
+    // Consecutive rows sharing a Bulty No show ONE merged Amount cell (like the export report)
+    const amtSpan = {}, amtSkip = new Set();
+    for (let i = 0; i < rows.length;) {
+      const key = (rows[i].bultyNo || "").trim().toLowerCase();
+      let j = i + 1;
+      if (key) while (j < rows.length && (rows[j].bultyNo || "").trim().toLowerCase() === key) j++;
+      if (j - i > 1) { amtSpan[i] = j - i; for (let k = i + 1; k < j; k++) amtSkip.add(k); }
+      i = j;
+    }
+    // Consecutive rows exported together (same Export No.) share ONE merged Charges cell
+    const chgSpan = {}, chgSkip = new Set();
+    for (let i = 0; i < rows.length;) {
+      const en = rows[i].exportStatus === "Exported" ? rows[i].exportNo : null;
+      let j = i + 1;
+      if (en !== null && en !== undefined && en !== "") while (j < rows.length && rows[j].exportStatus === "Exported" && String(rows[j].exportNo) === String(en)) j++;
+      if (j - i > 1) { chgSpan[i] = j - i; for (let k = i + 1; k < j; k++) chgSkip.add(k); }
+      i = j;
+    }
+    tbody.innerHTML = rows.map((r, i) => rowHTML(r, { span: amtSpan[i] || 0, skip: amtSkip.has(i), cSpan: chgSpan[i] || 0, cSkip: chgSkip.has(i) })).join("");
   }
 
   document.getElementById("filterResultCount").textContent = rows.length
     ? `Showing ${rows.length} of ${APP.records.length} records`
     : "";
 
+  renderViewTabs();
   updateSelectionInfo(rows);
   renderSummaryBar(rows);
   bindRowEvents();
 }
 
-function rowHTML(r) {
+// Charges (Bus / Train parking, Railway handling, etc.) that were added to the export this record belongs to
+function getExportChargeInfo(exportNo) {
+  if (exportNo === null || exportNo === undefined || exportNo === "") return null;
+  const ex = APP.exports.find(e => Number(e.exportNo) === Number(exportNo));
+  if (!ex) return null;
+  const rd = ex.reportData || {};
+  let lines = (rd.charges || []).map(c => ({ name: c.label || "PAR.CHg", amount: toNum(c.amount), formula: c.formula || "" }));
+  if (!lines.length && toNum(rd.parCharges) > 0) lines = [{ name: "PAR.CHg", amount: toNum(rd.parCharges), formula: "" }];
+  return { exportNo: ex.exportNo, lines, total: lines.reduce((s, l) => s + l.amount, 0) };
+}
+
+function chargesCellHTML(r, amt) {
+  if (amt.cSkip) return "";
+  const rs = amt.cSpan > 1 ? ` rowspan="${amt.cSpan}"` : "";
+  const info = r.exportStatus === "Exported" ? getExportChargeInfo(r.exportNo) : null;
+  if (!info) return `<td class="charges-cell"${rs}></td>`;
+  const body = info.lines.length
+    ? info.lines.map(l => `<div class="chg-line"><span>${escapeHtml(l.name)}${l.formula ? ` <em>(${escapeHtml(l.formula)})</em>` : ""}</span><strong>${formatINR(l.amount)}</strong></div>`).join("")
+      + (info.lines.length > 1 ? `<div class="chg-line chg-total"><span>Total</span><strong>${formatINR(info.total)}</strong></div>` : "")
+    : `<div class="chg-none">No charges</div>`;
+  return `<td class="charges-cell"${rs}><div class="chg-export">Export No. ${escapeHtml(String(info.exportNo))}</div>${body}</td>`;
+}
+
+function rowHTML(r, amt) {
+  amt = amt || {};
   const selected = APP.selected.has(r.id) ? "is-selected" : "";
   const exportedClass = r.exportStatus === "Exported" ? "is-exported" : "";
   const cell = (field, display, extraClass) => `<td data-field="${field}" class="editable-cell ${extraClass || ""}" title="Click to edit"><div class="cell-inner">${display}</div></td>`;
@@ -507,7 +602,10 @@ function rowHTML(r) {
     ${cell("bundles", formatNumber(r.bundles), "num-cell")}
     ${cell("transport", escapeHtml(r.transport))}
     ${cell("bultyNo", escapeHtml(r.bultyNo))}
-    ${cell("amount", formatINR(r.amount), "num-cell")}
+    ${amt.skip ? "" : (amt.span > 1
+      ? `<td data-field="amount" class="editable-cell num-cell merged-amount" rowspan="${amt.span}" title="One bilty = one price (shared by ${amt.span} records)"><div class="cell-inner">${formatINR(r.amount)} <span class="badge-shared">shared</span></div></td>`
+      : cell("amount", formatINR(r.amount), "num-cell"))}
+    ${chargesCellHTML(r, amt)}
     ${cell("voucherSrlNo", escapeHtml(r.voucherSrlNo))}
     ${cell("voucherNo", escapeHtml(r.voucherNo))}
     ${cell("driver", escapeHtml(r.driver))}
@@ -649,8 +747,16 @@ function focusCell(recordId, field, dir) {
     row = row.nextElementSibling;
   }
   if (!row) return;
-  const nextField = CELL_FIELD_ORDER[idx];
-  const td = row.querySelector(`td[data-field="${nextField}"]`);
+  let nextField = CELL_FIELD_ORDER[idx];
+  let td = row.querySelector(`td[data-field="${nextField}"]`);
+  // a merged (rowspan) Amount cell is missing on grouped rows — step past it
+  if (!td && (dir === "right" || dir === "left")) {
+    idx += dir === "right" ? 1 : -1;
+    if (idx >= CELL_FIELD_ORDER.length) idx = 0;
+    if (idx < 0) idx = CELL_FIELD_ORDER.length - 1;
+    nextField = CELL_FIELD_ORDER[idx];
+    td = row.querySelector(`td[data-field="${nextField}"]`);
+  }
   const nextRecord = APP.records.find(r => r.id === row.dataset.id);
   if (td && nextRecord) {
     const fieldDef = RECORD_FIELDS.find(f => f.key === nextField);
@@ -666,7 +772,7 @@ function updateSelectionInfo(rows) {
 
 function renderSummaryBar(rows) {
   const totalBundles = rows.reduce((s, r) => s + toNum(r.bundles), 0);
-  const totalAmount = rows.reduce((s, r) => s + toNum(r.amount), 0);
+  const totalAmount = computeDedupedAmount(rows); // shared bilty counted once
   document.getElementById("sumRecords").textContent = formatNumber(rows.length);
   document.getElementById("sumBundles").textContent = formatNumber(totalBundles);
   document.getElementById("sumAmount").textContent = formatINR(totalAmount);
@@ -680,7 +786,7 @@ function openRecordModal(id) {
 
   const grid = document.getElementById("recordFormGrid");
   grid.innerHTML = RECORD_FIELDS.map(f => fieldHTML(f, record)).join("");
-  document.getElementById("rf_isRelocation").checked = record ? !!record.isRelocation : false;
+  document.getElementById("rf_isRelocation").checked = record ? !!record.isRelocation : APP.view === "relocation";
   setupBultyAmountLock();
   openModal("modalRecord");
   const firstInput = grid.querySelector("input, select");
@@ -867,7 +973,7 @@ function printDispatchTable() {
       <td>${escapeHtml(r.driver)}</td>
       <td>${r.exportStatus}</td>
     </tr>`).join("");
-  const totalAmount = rows.reduce((s, r) => s + toNum(r.amount), 0);
+  const totalAmount = computeDedupedAmount(rows); // shared bilty counted once
   const totalBundles = rows.reduce((s, r) => s + toNum(r.bundles), 0);
 
   document.getElementById("tablePrintArea").innerHTML = `
@@ -888,11 +994,15 @@ function computeExportBatch(candidateRows, limit) {
   const eligible = candidateRows.filter(r => r.exportStatus !== "Exported");
   let running = 0;
   const included = [];
+  const seenBulty = new Set();
   let stoppedAt = -1;
   for (let i = 0; i < eligible.length; i++) {
-    const amt = toNum(eligible[i].amount);
+    // a shared bilty's price counts once, so later records on the same bilty add 0
+    const bKey = (eligible[i].bultyNo || "").trim().toLowerCase();
+    const amt = (bKey && seenBulty.has(bKey)) ? 0 : toNum(eligible[i].amount);
     if (running + amt <= limit) {
       running += amt;
+      if (bKey) seenBulty.add(bKey);
       included.push(eligible[i]);
     } else {
       stoppedAt = i;
@@ -900,7 +1010,7 @@ function computeExportBatch(candidateRows, limit) {
     }
   }
   const excluded = stoppedAt === -1 ? [] : eligible.slice(stoppedAt);
-  const excludedTotal = excluded.reduce((s, r) => s + toNum(r.amount), 0);
+  const excludedTotal = computeDedupedAmount(excluded);
   return {
     eligible, included, excluded,
     includedTotal: running,
@@ -969,6 +1079,7 @@ function startExportFlow() {
         <span>${formatNumber(batch.included.reduce((s, r) => s + toNum(r.bundles), 0))} bundles ×</span>
         <input type="number" id="exRailwayRate" min="0" step="0.01" placeholder="Rate per bundle">
         <span id="exRailwayComputedAmount">= ₹0.00</span>
+        <input type="text" id="exRailwayMessage" class="charge-message" list="chargeMessageOptions" value="${escapeHtml(DEFAULT_RAILWAY_MESSAGE)}" placeholder="Message shown on the report">
       </div>
     </div>
     <div class="field">
@@ -982,11 +1093,11 @@ function startExportFlow() {
   // so the user usually just needs to type in the amounts. They can add/remove rows freely.
   const modesInBatch = [...new Set(batch.included.map(r => getModeForTransportName(r.transport)).filter(Boolean))];
   if (modesInBatch.length) {
-    modesInBatch.forEach(m => addChargeRow(`${m} Parking Charge`, ""));
+    modesInBatch.forEach(m => addChargeRow(`${m} Parking Charge`, "", DEFAULT_CHARGE_MESSAGE));
   } else {
-    addChargeRow("", "");
+    addChargeRow("", "", DEFAULT_CHARGE_MESSAGE);
   }
-  document.getElementById("btnAddCharge").addEventListener("click", () => addChargeRow("", ""));
+  document.getElementById("btnAddCharge").addEventListener("click", () => addChargeRow("", "", DEFAULT_CHARGE_MESSAGE));
   document.getElementById("exChargesContainer").addEventListener("click", (e) => {
     const removeBtn = e.target.closest(".charge-remove");
     if (removeBtn) removeBtn.closest(".charge-row").remove();
@@ -1006,7 +1117,11 @@ function startExportFlow() {
   openModal("modalExportPreview");
 }
 
-function chargeRowHTML(label, amount) {
+// Each charge line on a report carries its OWN message (e.g. "CHARGES OF RELOCATING FROM BHOPAL.")
+const DEFAULT_CHARGE_MESSAGE = "Local transport booking cost from publication.";
+const DEFAULT_RAILWAY_MESSAGE = "Booking charges from bundle publication to Railways including loading+marking+scanning charges.";
+
+function chargeRowHTML(label, amount, message) {
   return `
     <div class="charge-row">
       <input type="text" class="charge-label" list="chargeLabelOptions" placeholder="e.g. Bus Parking Charge" value="${escapeHtml(label || "")}">
@@ -1014,13 +1129,14 @@ function chargeRowHTML(label, amount) {
       <button type="button" class="icon-btn btn-sm charge-remove" title="Remove charge">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
       </button>
+      <input type="text" class="charge-message" list="chargeMessageOptions" placeholder="Message shown on the report, e.g. CHARGES OF RELOCATING FROM BHOPAL." value="${escapeHtml(message === undefined ? "" : message)}">
     </div>`;
 }
 
-function addChargeRow(label, amount) {
+function addChargeRow(label, amount, message) {
   const container = document.getElementById("exChargesContainer");
   if (!container) return;
-  container.insertAdjacentHTML("beforeend", chargeRowHTML(label, amount));
+  container.insertAdjacentHTML("beforeend", chargeRowHTML(label, amount, message));
 }
 
 function getNextExportNo() {
@@ -1089,6 +1205,22 @@ function syncRecordFieldToExport(record, field) {
   const rd = exp.reportData;
   rd.totalBundles = rd.rows.reduce((s, r) => s + toNum(r.bundles), 0);
   rd.totalAmount = computeDedupedAmount(rd.rows);
+
+  // A bundle edit changes any per-bundle charge (e.g. "Railway Bundle Handling Charge",
+  // stored with a "count*rate" formula) — recompute those using the new bundle total,
+  // keeping the same rate, then re-total the charges.
+  if (field === "bundles" && Array.isArray(rd.charges)) {
+    rd.charges.forEach(c => {
+      if (!c.formula) return;
+      const m = /^\s*[\d.]+\s*\*\s*([\d.]+)\s*$/.exec(c.formula);
+      if (!m) return;
+      const rate = toNum(m[1]);
+      c.amount = rd.totalBundles * rate;
+      c.formula = `${rd.totalBundles}*${rate}`;
+    });
+    rd.parCharges = rd.charges.reduce((s, c) => s + toNum(c.amount), 0);
+  }
+
   rd.grandTotal = rd.totalAmount + toNum(rd.parCharges);
   rd.driverLabel = computeDriverLabel(rd.rows);
 
@@ -1122,6 +1254,7 @@ function confirmExport() {
   // Parking / local transport charges — one or more named line items entered at export time
   const charges = Array.from(document.querySelectorAll("#exChargesContainer .charge-row")).map(row => ({
     label: row.querySelector(".charge-label").value.trim(),
+    description: row.querySelector(".charge-message").value.trim(),
     amount: toNum(row.querySelector(".charge-amount").value),
   })).filter(c => c.label && c.amount > 0);
 
@@ -1131,7 +1264,7 @@ function confirmExport() {
     if (rate > 0) {
       charges.push({
         label: "Railway Bundle Handling Charge",
-        description: "Booking charges from bundle publication to Railways including loading+marking+scanning charges.",
+        description: (document.getElementById("exRailwayMessage").value || "").trim(),
         amount: totalBundles * rate,
         formula: `${totalBundles}*${rate}`,
       });
@@ -1422,7 +1555,7 @@ function buildReportHTML(d) {
       </tr>
       ${(d.charges && d.charges.length) ? d.charges.map((c, i) => `
       <tr>
-        <td colspan="7">${escapeHtml(c.description || (i === 0 ? "Local transport booking cost from publication." : ""))}</td>
+        <td colspan="7">${escapeHtml(c.description !== undefined ? c.description : (i === 0 ? "Local transport booking cost from publication." : ""))}</td>
         <td class="right">${c.formula ? escapeHtml(c.formula) : escapeHtml((c.label || "PAR.CHg").toUpperCase())}</td>
         <td class="num">${formatINR(c.amount).replace("₹", "")}</td>
       </tr>`).join("") : `
@@ -2109,4 +2242,420 @@ function exportExcel(scope) {
     URL.revokeObjectURL(url);
   }
   showToast(`${rows.length} record(s) exported to Excel.`, "success");
+}
+
+/* =========================================================
+   CARGO ENTRY
+   One tab per cargo company (e.g. RADHASWAMI CARGO, PRAKASH CARGO).
+   Each cargo has its own entries and its own Sales Expenses report format.
+   ========================================================= */
+function loadCargoState() {
+  const storedCargos = Store.get(STORE_KEYS.cargos, null);
+  APP.cargos = Array.isArray(storedCargos) ? storedCargos : SEED_CARGOS.map(c => ({ ...c }));
+  APP.cargoEntries = Store.get(STORE_KEYS.cargoEntries, []);
+  APP.cargoReports = Store.get(STORE_KEYS.cargoReports, []);
+  APP.activeCargoId = APP.cargos.length ? APP.cargos[0].id : null;
+}
+function saveCargos() { Store.set(STORE_KEYS.cargos, APP.cargos); markSaving(); }
+function saveCargoEntries() { Store.set(STORE_KEYS.cargoEntries, APP.cargoEntries); markSaving(); }
+function saveCargoReports() { Store.set(STORE_KEYS.cargoReports, APP.cargoReports); markSaving(); }
+
+function getActiveCargo() { return APP.cargos.find(c => c.id === APP.activeCargoId) || null; }
+function cargoRowTotal(amount, marking) { return toNum(amount) + toNum(marking); }
+
+const CARGO_ICON_EDIT = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
+const CARGO_ICON_DEL = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+
+function renderCargoPage() {
+  const cargo = getActiveCargo();
+  document.getElementById("cargoTabs").innerHTML = APP.cargos.map(c => {
+    const n = APP.cargoEntries.filter(e => e.cargoId === c.id).length;
+    return `<button type="button" class="view-tab ${c.id === APP.activeCargoId ? "active" : ""}" data-cargo="${c.id}">${escapeHtml(c.name)} <span class="view-count">${n}</span></button>`;
+  }).join("") + `<button type="button" class="view-tab view-tab-add" id="btnAddCargo">+ Add Cargo</button>`;
+
+  document.getElementById("cargoNone").hidden = !!cargo;
+  document.getElementById("cargoWrap").hidden = !cargo;
+  if (!cargo) return;
+
+  const entries = APP.cargoEntries.filter(e => e.cargoId === cargo.id);
+  APP.cargoSelected.forEach(id => { if (!entries.some(e => e.id === id)) APP.cargoSelected.delete(id); });
+
+  // Header — columns follow this cargo's report format
+  const cols = ['<th class="col-check"><input type="checkbox" id="cargoSelectAll" title="Select all"></th>', "<th>SE. NO</th>", "<th>DATE OF BOOKING</th>", "<th>PARTY / SCHOOL NAME</th>", "<th>AREA</th>", "<th>INV. NO.</th>", "<th>NO OF BDL</th>", "<th>BILTY NO</th>", "<th>AMOUNT</th>"];
+  if (cargo.hasMarking) cols.push("<th>MARKING CHARGE</th>", "<th>TOTAL AMOUNT</th>");
+  cols.push("<th>REPORT STATUS</th>", '<th class="col-actions">ACTIONS</th>');
+  document.getElementById("cargoHead").innerHTML = `<tr>${cols.join("")}</tr>`;
+
+  document.getElementById("cargoRows").innerHTML = entries.map((e, i) => `
+    <tr data-id="${e.id}" class="${APP.cargoSelected.has(e.id) ? "is-selected" : ""} ${e.reportNo ? "is-exported" : ""}">
+      <td class="col-check"><input type="checkbox" class="cargo-check" ${APP.cargoSelected.has(e.id) ? "checked" : ""}></td>
+      <td class="row-index">${i + 1}</td>
+      <td>${escapeHtml(formatDateDMY(e.dateBooking))}</td>
+      <td>${escapeHtml(e.party)}</td>
+      <td>${escapeHtml(e.area)}</td>
+      <td>${cargoInvLines(e.invNo)}</td>
+      <td class="num-cell">${formatNumber(e.bundles)}</td>
+      <td>${escapeHtml(e.bultyNo)}</td>
+      <td class="num-cell">${formatINR(e.amount)}</td>
+      ${cargo.hasMarking ? `<td class="num-cell">${formatINR(e.markingCharge)}</td><td class="num-cell">${formatINR(cargoRowTotal(e.amount, e.markingCharge))}</td>` : ""}
+      <td>${e.reportNo ? `<span class="badge badge-exported">Report ${e.reportNo}</span>` : `<span class="badge badge-pending">Not Reported</span>`}</td>
+      <td class="col-actions"><div class="cell-actions">
+        <button class="icon-btn btn-sm" data-action="edit" title="Edit entry">${CARGO_ICON_EDIT}</button>
+        <button class="icon-btn btn-sm" data-action="delete" title="Delete entry">${CARGO_ICON_DEL}</button>
+      </div></td>
+    </tr>`).join("");
+  document.getElementById("cargoTable").style.display = entries.length ? "" : "none";
+  document.getElementById("cargoEmpty").hidden = entries.length > 0;
+
+  const selCount = entries.filter(e => APP.cargoSelected.has(e.id)).length;
+  document.getElementById("cargoSelectionInfo").textContent = selCount ? `${selCount} selected` : "";
+  const selAll = document.getElementById("cargoSelectAll");
+  if (selAll) selAll.checked = entries.length > 0 && selCount === entries.length;
+
+  document.getElementById("cargoSumEntries").textContent = formatNumber(entries.length);
+  document.getElementById("cargoSumBundles").textContent = formatNumber(entries.reduce((s, e) => s + toNum(e.bundles), 0));
+  document.getElementById("cargoSumAmount").textContent = formatINR(entries.reduce((s, e) => s + cargoRowTotal(e.amount, cargo.hasMarking ? e.markingCharge : 0), 0));
+
+  // Saved reports for this cargo
+  const reports = APP.cargoReports.filter(r => r.cargoId === cargo.id).sort((x, y) => y.no - x.no);
+  document.getElementById("cargoReportsBody").innerHTML = reports.map(r => `
+    <tr data-rid="${r.id}">
+      <td class="row-index">${r.no}</td>
+      <td>${escapeHtml(formatDateDMY(r.exportDate))}</td>
+      <td>${escapeHtml(r.bookingLabel || "")}</td>
+      <td class="num-cell">${r.rows.length}</td>
+      <td class="num-cell">${formatINR(r.grandTotal)}</td>
+      <td class="col-actions"><div class="cell-actions">
+        <button class="btn btn-secondary btn-sm" data-action="view">View / Print</button>
+        <button class="icon-btn btn-sm" data-action="delete-report" title="Delete report">${CARGO_ICON_DEL}</button>
+      </div></td>
+    </tr>`).join("");
+  document.getElementById("cargoReportsEmpty").hidden = reports.length > 0;
+}
+
+function cargoInvLines(v) {
+  if (!v) return "";
+  return String(v).split(/[\n,]+/).map(s => escapeHtml(s.trim())).filter(Boolean).join("<br>");
+}
+
+function setupCargoPage() {
+  // Tabs (incl. "+ Add Cargo")
+  document.getElementById("cargoTabs").addEventListener("click", (e) => {
+    if (e.target.closest("#btnAddCargo")) { openCargoModal(null); return; }
+    const tab = e.target.closest("[data-cargo]");
+    if (!tab) return;
+    APP.activeCargoId = tab.dataset.cargo;
+    APP.cargoSelected.clear();
+    renderCargoPage();
+  });
+
+  document.getElementById("btnAddCargoEntry").addEventListener("click", () => openCargoEntryModal(null));
+  document.getElementById("btnMakeCargoReport").addEventListener("click", openCargoReportModal);
+  document.getElementById("btnEditCargo").addEventListener("click", () => { if (APP.activeCargoId) openCargoModal(APP.activeCargoId); });
+  document.getElementById("btnDeleteCargo").addEventListener("click", deleteActiveCargo);
+  document.getElementById("btnSaveCargo").addEventListener("click", saveCargoFromModal);
+  document.getElementById("btnSaveCargoEntry").addEventListener("click", saveCargoEntryFromModal);
+  document.getElementById("btnConfirmCargoReport").addEventListener("click", confirmCargoReport);
+  ["ceAmount", "ceMarking"].forEach(id => document.getElementById(id).addEventListener("input", updateCargoEntryTotal));
+
+  // Entry table: select / edit / delete
+  const rows = document.getElementById("cargoRows");
+  rows.addEventListener("change", (e) => {
+    const cb = e.target.closest(".cargo-check");
+    if (!cb) return;
+    const id = cb.closest("tr").dataset.id;
+    if (cb.checked) APP.cargoSelected.add(id); else APP.cargoSelected.delete(id);
+    renderCargoPage();
+  });
+  rows.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    const id = btn.closest("tr").dataset.id;
+    if (btn.dataset.action === "edit") openCargoEntryModal(id);
+    if (btn.dataset.action === "delete") {
+      const entry = APP.cargoEntries.find(x => x.id === id);
+      APP.pendingDeleteFn = () => {
+        APP.cargoEntries = APP.cargoEntries.filter(x => x.id !== id);
+        APP.cargoSelected.delete(id);
+        saveCargoEntries();
+        renderCargoPage();
+        showToast("Entry deleted.", "success");
+      };
+      document.getElementById("modalDeleteText").textContent = entry && entry.reportNo
+        ? `This entry is already in Report ${entry.reportNo}. Deleting it here will not change that saved report.`
+        : "This entry will be removed.";
+      openModal("modalDelete");
+    }
+  });
+  document.getElementById("cargoHead").addEventListener("change", (e) => {
+    if (e.target.id !== "cargoSelectAll") return;
+    APP.cargoEntries.filter(x => x.cargoId === APP.activeCargoId).forEach(x => {
+      if (e.target.checked) APP.cargoSelected.add(x.id); else APP.cargoSelected.delete(x.id);
+    });
+    renderCargoPage();
+  });
+
+  // Saved reports: view / delete
+  document.getElementById("cargoReportsBody").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    const rid = btn.closest("tr").dataset.rid;
+    if (btn.dataset.action === "view") viewCargoReport(rid);
+    if (btn.dataset.action === "delete-report") {
+      const rep = APP.cargoReports.find(r => r.id === rid);
+      APP.pendingDeleteFn = () => {
+        APP.cargoReports = APP.cargoReports.filter(r => r.id !== rid);
+        APP.cargoEntries.forEach(x => { if (x.reportId === rid) { x.reportNo = null; x.reportId = null; } });
+        saveCargoReports(); saveCargoEntries();
+        renderCargoPage();
+        showToast("Report deleted. Its entries are available for a new report.", "success");
+      };
+      document.getElementById("modalDeleteText").textContent = `Report ${rep ? rep.no : ""} will be deleted and its entries will become "Not Reported" again.`;
+      openModal("modalDelete");
+    }
+  });
+}
+
+/* ---------- Cargo add / edit ---------- */
+function openCargoModal(id) {
+  APP.editingCargoId = id;
+  const c = id ? APP.cargos.find(x => x.id === id) : null;
+  document.getElementById("modalCargoTitle").textContent = c ? "Edit Cargo" : "Add Cargo";
+  document.getElementById("cgName").value = c ? c.name : "";
+  document.getElementById("cgMessage").value = c ? c.message : "";
+  document.getElementById("cgShowDate").checked = c ? !!c.showDateCol : false;
+  document.getElementById("cgHasMarking").checked = c ? !!c.hasMarking : false;
+  openModal("modalCargo");
+  setTimeout(() => document.getElementById("cgName").focus(), 30);
+}
+
+function saveCargoFromModal() {
+  const name = document.getElementById("cgName").value.trim().toUpperCase();
+  if (!name) { showToast("Please enter the cargo name.", "error"); return; }
+  const dup = APP.cargos.some(c => c.name.toLowerCase() === name.toLowerCase() && c.id !== APP.editingCargoId);
+  if (dup) { showToast("This cargo already exists.", "error"); return; }
+  const message = document.getElementById("cgMessage").value.trim() || `${name} BOOKING CHARGES FROM PUBLICATION.`;
+  const data = {
+    name, message,
+    showDateCol: document.getElementById("cgShowDate").checked,
+    hasMarking: document.getElementById("cgHasMarking").checked,
+  };
+  if (APP.editingCargoId) {
+    Object.assign(APP.cargos.find(c => c.id === APP.editingCargoId), data);
+  } else {
+    const c = { id: uid("cargo"), ...data };
+    APP.cargos.push(c);
+    APP.activeCargoId = c.id;
+    APP.cargoSelected.clear();
+  }
+  saveCargos();
+  closeModal("modalCargo");
+  renderCargoPage();
+  showToast("Cargo saved.", "success");
+}
+
+function deleteActiveCargo() {
+  const cargo = getActiveCargo();
+  if (!cargo) return;
+  const hasData = APP.cargoEntries.some(e => e.cargoId === cargo.id) || APP.cargoReports.some(r => r.cargoId === cargo.id);
+  if (hasData) { showToast("This cargo still has entries or reports. Delete those first.", "error"); return; }
+  APP.pendingDeleteFn = () => {
+    APP.cargos = APP.cargos.filter(c => c.id !== cargo.id);
+    APP.activeCargoId = APP.cargos.length ? APP.cargos[0].id : null;
+    saveCargos();
+    renderCargoPage();
+    showToast("Cargo deleted.", "success");
+  };
+  document.getElementById("modalDeleteText").textContent = `${cargo.name} will be removed from the Cargo Entry list.`;
+  openModal("modalDelete");
+}
+
+/* ---------- Cargo entry add / edit ---------- */
+function openCargoEntryModal(id) {
+  const cargo = getActiveCargo();
+  if (!cargo) return;
+  APP.editingCargoEntryId = id;
+  const e = id ? APP.cargoEntries.find(x => x.id === id) : null;
+  document.getElementById("modalCargoEntryTitle").textContent = (e ? "Edit Entry — " : "Add Entry — ") + cargo.name;
+  document.getElementById("ceDate").value = e ? e.dateBooking || "" : "";
+  document.getElementById("ceParty").value = e ? e.party || "" : "";
+  document.getElementById("ceArea").value = e ? e.area || "" : "";
+  document.getElementById("ceInvNo").value = e ? e.invNo || "" : "";
+  document.getElementById("ceBundles").value = e ? e.bundles : "";
+  document.getElementById("ceBilty").value = e ? e.bultyNo || "" : "";
+  document.getElementById("ceAmount").value = e ? e.amount : "";
+  document.getElementById("ceMarking").value = e ? (e.markingCharge || "") : "";
+  document.getElementById("ceMarkingField").hidden = !cargo.hasMarking;
+  document.getElementById("ceTotalField").hidden = !cargo.hasMarking;
+  updateCargoEntryTotal();
+  openModal("modalCargoEntry");
+  setTimeout(() => document.getElementById("ceDate").focus(), 30);
+}
+
+function updateCargoEntryTotal() {
+  document.getElementById("ceTotal").textContent = formatINR(cargoRowTotal(document.getElementById("ceAmount").value, document.getElementById("ceMarking").value));
+}
+
+function saveCargoEntryFromModal() {
+  const cargo = getActiveCargo();
+  if (!cargo) return;
+  const v = id => document.getElementById(id).value.trim();
+  if (!v("ceParty")) { showToast("Please enter the Party / School name.", "error"); return; }
+  if (!isValidNumber(v("ceBundles")) || !isValidNumber(v("ceAmount")) || !isValidNumber(v("ceMarking"))) {
+    showToast("Bundles and amounts must be numbers (0 or more).", "error"); return;
+  }
+  const data = {
+    dateBooking: v("ceDate"), party: v("ceParty"), area: v("ceArea"), invNo: v("ceInvNo"),
+    bundles: toNum(v("ceBundles")), bultyNo: v("ceBilty"), amount: toNum(v("ceAmount")),
+    markingCharge: cargo.hasMarking ? toNum(v("ceMarking")) : 0,
+  };
+  let note = "";
+  if (APP.editingCargoEntryId) {
+    const entry = APP.cargoEntries.find(x => x.id === APP.editingCargoEntryId);
+    Object.assign(entry, data);
+    if (entry.reportNo) note = ` Report ${entry.reportNo} keeps the old values.`;
+  } else {
+    APP.cargoEntries.push({ id: uid("ce"), cargoId: cargo.id, reportNo: null, reportId: null, ...data });
+  }
+  saveCargoEntries();
+  closeModal("modalCargoEntry");
+  renderCargoPage();
+  showToast("Entry saved." + note, "success");
+}
+
+/* ---------- Make report ---------- */
+function getCargoReportPool(cargo) {
+  const open = APP.cargoEntries.filter(e => e.cargoId === cargo.id && !e.reportNo);
+  const chosen = open.filter(e => APP.cargoSelected.has(e.id));
+  return chosen.length ? chosen : open;
+}
+
+// e.g. "23.07.2026" · "15,16 & 17.09.2026" · across months: "28.08.2026, 02.09.2026"
+function buildBookingDateLabel(entries) {
+  const dates = [...new Set(entries.map(e => e.dateBooking).filter(Boolean))].sort();
+  if (!dates.length) return "";
+  if (dates.length === 1) return formatDateDots(dates[0]);
+  const parts = dates.map(d => d.split("-"));
+  const sameMonth = parts.every(p => p[0] === parts[0][0] && p[1] === parts[0][1]);
+  if (!sameMonth) return dates.map(formatDateDots).join(", ");
+  const days = parts.map(p => String(parseInt(p[2], 10)));
+  const last = days.pop();
+  return `${days.join(",")} & ${last}.${parts[0][1]}.${parts[0][0]}`;
+}
+
+function openCargoReportModal() {
+  const cargo = getActiveCargo();
+  if (!cargo) return;
+  const pool = getCargoReportPool(cargo);
+  if (!pool.length) { showToast("No entries to report. Add entries first (or all are already in a report).", "error"); return; }
+  APP.pendingCargoPool = pool.map(e => e.id);
+  const usingSel = pool.some(e => APP.cargoSelected.has(e.id));
+  const totalBdl = pool.reduce((s, e) => s + toNum(e.bundles), 0);
+  const grand = pool.reduce((s, e) => s + cargoRowTotal(e.amount, cargo.hasMarking ? e.markingCharge : 0), 0);
+  document.getElementById("cargoReportSummary").innerHTML = `
+    <div class="row"><span>Cargo</span><span>${escapeHtml(cargo.name)}</span></div>
+    <div class="row"><span>Entries in report</span><span>${pool.length} ${usingSel ? "(selected)" : "(all not yet reported)"}</span></div>
+    <div class="row"><span>Total Bundles</span><span>${formatNumber(totalBdl)}</span></div>
+    <div class="row"><span>Total Amount</span><span>${formatINR(grand)}</span></div>`;
+  document.getElementById("crDate").value = todayISO();
+  document.getElementById("crBooking").value = buildBookingDateLabel(pool);
+  document.getElementById("crMessage").value = cargo.message;
+  openModal("modalCargoReport");
+}
+
+function confirmCargoReport() {
+  const cargo = getActiveCargo();
+  if (!cargo || !APP.pendingCargoPool) return;
+  const pool = APP.cargoEntries.filter(e => APP.pendingCargoPool.includes(e.id));
+  if (!pool.length) return;
+  const no = Math.max(0, ...APP.cargoReports.filter(r => r.cargoId === cargo.id).map(r => r.no)) + 1;
+  const rows = pool.map((e, i) => ({
+    seNo: i + 1, dateBooking: e.dateBooking, party: e.party, area: e.area, invNo: e.invNo,
+    bundles: toNum(e.bundles), bultyNo: e.bultyNo, amount: toNum(e.amount),
+    markingCharge: cargo.hasMarking ? toNum(e.markingCharge) : 0,
+    total: cargoRowTotal(e.amount, cargo.hasMarking ? e.markingCharge : 0),
+  }));
+  const rep = {
+    id: uid("crep"), cargoId: cargo.id, no,
+    cargoName: cargo.name, showDateCol: !!cargo.showDateCol, hasMarking: !!cargo.hasMarking,
+    exportDate: document.getElementById("crDate").value || todayISO(),
+    bookingLabel: document.getElementById("crBooking").value.trim(),
+    message: document.getElementById("crMessage").value.trim(),
+    rows,
+    totalBundles: rows.reduce((s, r) => s + r.bundles, 0),
+    totalAmount: rows.reduce((s, r) => s + r.amount, 0),
+    totalMarking: rows.reduce((s, r) => s + r.markingCharge, 0),
+    grandTotal: rows.reduce((s, r) => s + r.total, 0),
+  };
+  APP.cargoReports.push(rep);
+  pool.forEach(e => { e.reportNo = no; e.reportId = rep.id; APP.cargoSelected.delete(e.id); });
+  APP.pendingCargoPool = null;
+  saveCargoReports(); saveCargoEntries();
+  closeModal("modalCargoReport");
+  renderCargoPage();
+  viewCargoReport(rep.id);
+  showToast(`Report ${no} made for ${cargo.name}.`, "success");
+}
+
+function viewCargoReport(id) {
+  const rep = APP.cargoReports.find(r => r.id === id);
+  if (!rep) return;
+  APP.viewingExportNo = null;
+  document.getElementById("modalReportTitle").textContent = `${rep.cargoName} — Sales Expenses (Report ${rep.no})`;
+  document.getElementById("reportPrintArea").innerHTML = buildCargoReportHTML(rep);
+  document.getElementById("reportCommentBox").hidden = true;
+  openModal("modalReport");
+}
+
+// Matches the cargo ledger sheets: title, bundle-booking-date line, table, TOTAL, cargo message, In words / TOTAL AMT.
+function buildCargoReportHTML(d) {
+  const n = 5 + (d.showDateCol ? 1 : 0) + 1 + 1 + (d.hasMarking ? 2 : 0); // SE, PARTY, AREA, INV, BDL, [DATE], BILTY, AMOUNT, [MARKING, TOTAL]
+  const head = ["SE. NO", "PARTY / SCHOOL NAME", "AREA", "INV. NO.", "NO OF<br>BDL"];
+  if (d.showDateCol) head.push("BUNDLE BOOKING<br>DATE");
+  head.push("BILTY NO", "AMOUNT");
+  if (d.hasMarking) head.push("MARKING<br>CHARGE", "TOTAL<br>AMOUNT");
+
+  const body = d.rows.map(r => `
+      <tr>
+        <td class="center">${r.seNo}</td>
+        <td>${escapeHtml(r.party)}</td>
+        <td>${escapeHtml(r.area)}</td>
+        <td class="center">${cargoInvLines(r.invNo)}</td>
+        <td class="center">${formatNumber(r.bundles)}</td>
+        ${d.showDateCol ? `<td class="center">${escapeHtml(formatDateDots(r.dateBooking))}</td>` : ""}
+        <td class="center">${escapeHtml(r.bultyNo)}</td>
+        <td class="num">${formatINR(r.amount).replace("₹", "")}</td>
+        ${d.hasMarking ? `<td class="num">${formatINR(r.markingCharge).replace("₹", "")}</td><td class="num">${formatINR(r.total).replace("₹", "")}</td>` : ""}
+      </tr>`).join("");
+
+  // Totals: the last two columns carry the label + value (BILTY NO/AMOUNT, or MARKING/TOTAL AMOUNT)
+  const beforeLast = n - 2 - 5 - (d.showDateCol ? 1 : 0); // blank cells between BDL/date and the label column
+  const totalsRow = `
+      <tr class="report-totals-row">
+        <td></td><td></td><td></td>
+        <td class="right">TOTAL</td>
+        <td class="center">${formatNumber(d.totalBundles)}</td>
+        ${d.showDateCol ? "<td></td>" : ""}
+        ${d.hasMarking ? `<td></td><td></td>` : ""}
+        <td class="right">TOTAL</td>
+        <td class="num">${formatINR(d.grandTotal).replace("₹", "")}</td>
+      </tr>`;
+  void beforeLast;
+
+  return `
+  <div class="report-sheet">
+    <table class="report-table">
+      <tr><td colspan="${n}" class="report-cargo-title">SALES EXPENSES Date ${escapeHtml(formatDateDots(d.exportDate))}</td></tr>
+      ${d.bookingLabel ? `<tr><td colspan="${n}" class="report-cargo-sub">BUNDLE BOOKING Date ${escapeHtml(d.bookingLabel)}</td></tr>` : ""}
+      <tr class="report-col-head">${head.map(h => `<th>${h}</th>`).join("")}</tr>
+      ${body}
+      ${totalsRow}
+      <tr><td colspan="${n}" class="report-msg">${escapeHtml(d.message || "")}</td></tr>
+      <tr>
+        <td colspan="${n - 2}">In words:- ${numberToWordsIndian(d.grandTotal)}</td>
+        <td class="right">TOTAL AMT.</td>
+        <td class="num">${formatINR(d.grandTotal).replace("₹", "")}</td>
+      </tr>
+    </table>
+  </div>`;
 }

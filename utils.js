@@ -11,6 +11,9 @@ const STORE_KEYS = {
   areas: "btdm_areas",
   settings: "btdm_settings",
   seeded: "btdm_seeded",
+  cargos: "btdm_cargos",
+  cargoEntries: "btdm_cargoEntries",
+  cargoReports: "btdm_cargoReports",
 };
 
 const Store = {

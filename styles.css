@@ -326,7 +326,10 @@ input.input-error{border-color:var(--red-600);background:var(--red-100);}
   background:var(--amber-100);color:var(--amber-700);border:1px solid #f0d9ac;
   padding:12px 14px;border-radius:8px;font-size:13.5px;margin-top:10px;
 }
-.charge-row{display:flex;gap:8px;align-items:center;margin-bottom:8px;}
+.charge-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-bottom:10px;}
+.charge-row .charge-message{flex:1 1 100%;font-size:13px;}
+.railway-charge-row{flex-wrap:wrap;}
+.railway-charge-row .charge-message{flex:1 1 100%;max-width:none;}
 .charge-row .charge-label{flex:2;}
 .charge-row .charge-amount{flex:1;}
 .charge-row .charge-remove{flex:0 0 auto;color:var(--red-600);}
@@ -432,3 +435,33 @@ input.input-error{border-color:var(--red-600);background:var(--red-100);}
   .summary-bar{flex-wrap:wrap;}
   .summary-item{flex:1 1 50%;}
 }
+/* Shared-bilty merged Amount cell */
+.sheet-table td.merged-amount{vertical-align:middle;background:#eef5ff;}
+.badge-shared{display:inline-block;padding:1px 6px;border-radius:999px;font-size:9.5px;font-weight:800;background:#dbeafe;color:#1d4ed8;vertical-align:middle;margin-left:4px;line-height:1.4;}
+
+/* Section tabs above the dispatch table */
+.view-tabs{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px;}
+.view-tab{border:1.5px solid var(--navy-200,#c7d3e6);background:#fff;color:var(--navy-700,#1e3a5f);font:inherit;font-weight:700;font-size:14px;padding:9px 16px;border-radius:10px;cursor:pointer;}
+.view-tab:hover{background:#f1f5fb;}
+.view-tab.active{background:var(--navy-700,#1e3a5f);color:#fff;border-color:var(--navy-700,#1e3a5f);}
+.view-count{display:inline-block;min-width:22px;padding:1px 7px;margin-left:6px;border-radius:999px;font-size:12px;font-weight:800;background:rgba(30,58,95,.12);text-align:center;}
+.view-tab.active .view-count{background:rgba(255,255,255,.22);}
+@media print{.view-tabs{display:none !important;}}
+
+/* Charges column: charges that were added to the export a record belongs to */
+.sheet-table td.charges-cell{vertical-align:middle;min-width:200px;padding:6px 10px;font-size:12.5px;background:#fbf7ee !important;}
+.charges-cell .chg-export{font-size:10.5px;font-weight:800;color:var(--navy-600);text-transform:uppercase;letter-spacing:.03em;margin-bottom:3px;}
+.charges-cell .chg-line{display:flex;justify-content:space-between;gap:12px;line-height:1.5;}
+.charges-cell .chg-line em{font-style:normal;color:var(--ink-500,#64748b);font-size:11.5px;}
+.charges-cell .chg-line strong{font-variant-numeric:tabular-nums;white-space:nowrap;}
+.charges-cell .chg-total{border-top:1px solid #e6dcc3;margin-top:3px;padding-top:3px;}
+.charges-cell .chg-none{color:var(--ink-500,#64748b);font-style:italic;}
+
+/* ================= CARGO ENTRY ================= */
+.cargo-subhead{margin:26px 0 10px;font-size:16px;}
+.cargo-form-grid{grid-template-columns:1fr;}
+.cargo-total-box{padding:10px 12px;border:1.5px solid var(--border);border-radius:8px;background:#f5f7fa;font-weight:800;font-variant-numeric:tabular-nums;}
+.view-tab-add{border-style:dashed;color:var(--navy-600);}
+.report-table td.report-cargo-title{text-align:center;font-weight:700;font-size:15px;letter-spacing:.01em;}
+.report-table td.report-cargo-sub{text-align:center;font-weight:700;font-size:14px;}
+.report-table td.report-msg{font-size:12px;}

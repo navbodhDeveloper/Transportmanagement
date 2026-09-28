@@ -58,3 +58,9 @@ const DEFAULT_SETTINGS = {
   defaultDriver: "",
   defaultMode: "Bus",
 };
+
+/* Cargo companies used on the Cargo Entry page */
+const SEED_CARGOS = [
+  { id: "cargo_1", name: "RADHASWAMI CARGO", message: "SHREE RADHA SWAMI CARGO BOOKING CHARGES FROM PUBLICATION.", showDateCol: true, hasMarking: false },
+  { id: "cargo_2", name: "PRAKASH CARGO", message: "PRAKASH CARGO BOOKING CHARGES FROM PUBLICATION.", showDateCol: false, hasMarking: true },
+];
