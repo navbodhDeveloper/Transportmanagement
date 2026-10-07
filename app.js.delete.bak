@@ -1,0 +1,2818 @@
+/* =========================================================
+   BOOK TRANSPORT & DISPATCH MANAGEMENT — APP LOGIC
+   ========================================================= */
+
+const RECORD_FIELDS = [
+  { key: "dateBooking", label: "Date of Booking", type: "date", required: true },
+  { key: "dateEntry", label: "Date of Entry (Vikry/Pete)", type: "date" },
+  { key: "party", label: "Party / School Name", type: "text", required: true },
+  { key: "area", label: "Area", type: "text-list", list: "areaListOptions" },
+  { key: "invNo", label: "Inv. No.", type: "text" },
+  { key: "bundles", label: "No of Bundles", type: "number" },
+  { key: "transport", label: "Transport", type: "text-list", list: "transporterListOptions" },
+  { key: "bultyNo", label: "Bulty No", type: "text" },
+  { key: "amount", label: "Amount", type: "number" },
+  { key: "voucherSrlNo", label: "Voucher Srl Number", type: "text" },
+  { key: "voucherNo", label: "Voucher No", type: "text" },
+  { key: "driver", label: "Driver", type: "text-list", list: "driverListOptions" },
+];
+
+const APP = {
+  records: [],
+  expenses: [],
+  exports: [],
+  drivers: [],
+  transporters: [],
+  areas: [],
+  settings: {},
+  filters: { from: "", to: "", driver: "", mode: "", transporter: "", area: "", search: "" },
+  sort: { key: "srlNo", dir: "asc" },
+  view: "all", // all | regular | railways | relocation
+  page: 1,
+  pageSize: 5, // 0 = show all
+  totalPages: 1,
+  pageStart: 0,
+  selected: new Set(),
+  pendingDeleteFn: null,
+  pendingImportRows: null,
+  pendingExportBatch: null,
+  editingRecordId: null,
+  editingDriverId: null,
+  editingTransporterId: null,
+  editingAreaId: null,
+  selectedExports: new Set(),
+  viewingExportNo: null,
+  // Cargo Entry page
+  cargos: [],
+  cargoEntries: [],
+  cargoReports: [],
+  activeCargoId: null,
+  editingCargoId: null,
+  editingCargoEntryId: null,
+  cargoSelected: new Set(),
+  pendingCargoPool: null,
+};
+
+/* ================= INIT ================= */
+document.addEventListener("DOMContentLoaded", init);
+
+function init() {
+  loadState();
+  loadCargoState();
+  setupNav();
+  setupModals();
+  setupDispatchPage();
+  setupExpensePage();
+  setupMastersPage();
+  setupSettingsPage();
+  setupExportRegisterPage();
+  setupCargoPage();
+  renderAll();
+}
+
+function loadState() {
+  const seeded = Store.get(STORE_KEYS.seeded, false);
+  if (!seeded) {
+    APP.records = SEED_DISPATCH_RECORDS.map(r => ({
+      id: uid("rec"),
+      exportStatus: "Not Exported",
+      exportNo: null,
+      voucherSrlNo: "",
+      voucherNo: "",
+      ...r,
+    }));
+    APP.drivers = SEED_DRIVERS.slice();
+    APP.transporters = SEED_TRANSPORTERS.slice();
+    APP.areas = SEED_AREAS.slice();
+    APP.expenses = [];
+    APP.exports = [];
+    APP.settings = { ...DEFAULT_SETTINGS };
+    persistAll();
+    Store.set(STORE_KEYS.seeded, true);
+  } else {
+    APP.records = Store.get(STORE_KEYS.records, []);
+    APP.expenses = Store.get(STORE_KEYS.expenses, []);
+    APP.exports = Store.get(STORE_KEYS.exports, []);
+    APP.drivers = Store.get(STORE_KEYS.drivers, SEED_DRIVERS.slice());
+    APP.transporters = Store.get(STORE_KEYS.transporters, SEED_TRANSPORTERS.slice());
+    // People upgrading from an earlier version won't have an areas master yet —
+    // build one from whatever areas already appear in their records.
+    const storedAreas = Store.get(STORE_KEYS.areas, null);
+    if (storedAreas) {
+      APP.areas = storedAreas;
+    } else {
+      const existingAreaNames = [...new Set(APP.records.map(r => r.area).filter(Boolean))];
+      APP.areas = existingAreaNames.length
+        ? existingAreaNames.sort().map(name => ({ id: uid("area"), name, status: "Active" }))
+        : SEED_AREAS.slice();
+      saveAreas();
+    }
+    APP.settings = { ...DEFAULT_SETTINGS, ...Store.get(STORE_KEYS.settings, {}) };
+  }
+}
+
+function persistAll() {
+  Store.set(STORE_KEYS.records, APP.records);
+  Store.set(STORE_KEYS.expenses, APP.expenses);
+  Store.set(STORE_KEYS.exports, APP.exports);
+  Store.set(STORE_KEYS.drivers, APP.drivers);
+  Store.set(STORE_KEYS.transporters, APP.transporters);
+  Store.set(STORE_KEYS.areas, APP.areas);
+  Store.set(STORE_KEYS.settings, APP.settings);
+}
+
+let saveTimer = null;
+function markSaving() {
+  const ind = document.getElementById("saveIndicator");
+  ind.classList.add("is-saving");
+  ind.querySelector("span").textContent = "Saving…";
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => {
+    ind.classList.remove("is-saving");
+    ind.querySelector("span").textContent = "All changes saved";
+  }, 450);
+}
+
+function saveRecords() { Store.set(STORE_KEYS.records, APP.records); markSaving(); }
+function saveExpenses() { Store.set(STORE_KEYS.expenses, APP.expenses); markSaving(); }
+function saveExports() { Store.set(STORE_KEYS.exports, APP.exports); markSaving(); }
+function saveDrivers() { Store.set(STORE_KEYS.drivers, APP.drivers); markSaving(); }
+function saveTransporters() { Store.set(STORE_KEYS.transporters, APP.transporters); markSaving(); }
+function saveAreas() { Store.set(STORE_KEYS.areas, APP.areas); markSaving(); }
+function saveSettings() { Store.set(STORE_KEYS.settings, APP.settings); markSaving(); }
+
+function renderAll() {
+  renderMasterOptions();
+  renderDashboard();
+  renderDispatchTable();
+  renderExpenseTable();
+  renderExportRegister();
+  renderDriverTable();
+  renderTransporterTable();
+  renderAreaTable();
+  renderCargoPage();
+  loadSettingsForm();
+}
+
+/* ================= TOASTS ================= */
+function showToast(message, type) {
+  const stack = document.getElementById("toastStack");
+  const el = document.createElement("div");
+  el.className = "toast" + (type ? " toast-" + type : "");
+  el.textContent = message;
+  stack.appendChild(el);
+  setTimeout(() => {
+    el.style.opacity = "0";
+    el.style.transition = "opacity .25s ease";
+    setTimeout(() => el.remove(), 260);
+  }, 3200);
+}
+
+/* ================= NAVIGATION ================= */
+function setupNav() {
+  document.querySelectorAll(".nav-item[data-page]").forEach(btn => {
+    btn.addEventListener("click", () => showPage(btn.dataset.page));
+  });
+  document.querySelectorAll("[data-page]").forEach(el => {
+    if (!el.classList.contains("nav-item")) {
+      el.addEventListener("click", () => showPage(el.dataset.page));
+    }
+  });
+
+  const menuToggle = document.getElementById("menuToggle");
+  const sidebar = document.getElementById("sidebar");
+  const scrim = document.getElementById("sidebarScrim");
+  menuToggle.addEventListener("click", () => {
+    sidebar.classList.add("is-open");
+    scrim.classList.add("is-open");
+  });
+  scrim.addEventListener("click", () => {
+    sidebar.classList.remove("is-open");
+    scrim.classList.remove("is-open");
+  });
+}
+
+const PAGE_TITLES = {
+  dashboard: ["Dashboard", "Book Publication & Distribution System"],
+  dispatch: ["Dispatch Records", "Book Publication & Distribution System"],
+  expenses: ["Transport Expenses", "Book Publication & Distribution System"],
+  exports: ["Export Register", "Book Publication & Distribution System"],
+  masters: ["Masters", "Book Publication & Distribution System"],
+  settings: ["Settings", "Book Publication & Distribution System"],
+  cargo: ["Cargo Entry", "Book Publication & Distribution System"],
+};
+
+function showPage(name) {
+  document.querySelectorAll(".page").forEach(p => p.classList.remove("is-active"));
+  document.getElementById("page-" + name).classList.add("is-active");
+  document.querySelectorAll(".nav-item[data-page]").forEach(btn => {
+    btn.classList.toggle("is-active", btn.dataset.page === name);
+  });
+  document.getElementById("sidebar").classList.remove("is-open");
+  document.getElementById("sidebarScrim").classList.remove("is-open");
+  if (name === "dashboard") renderDashboard();
+  window.scrollTo({ top: 0, behavior: "instant" in window ? "instant" : "auto" });
+}
+
+/* ================= MODALS ================= */
+function setupModals() {
+  document.querySelectorAll("[data-close-modal]").forEach(btn => {
+    btn.addEventListener("click", () => closeModal(btn.dataset.closeModal));
+  });
+  document.querySelectorAll(".modal-overlay").forEach(ov => {
+    ov.addEventListener("click", (e) => { if (e.target === ov) closeModal(ov.id); });
+  });
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") {
+      document.querySelectorAll(".modal-overlay:not([hidden])").forEach(ov => closeModal(ov.id));
+    }
+  });
+}
+function openModal(id) { document.getElementById(id).hidden = false; }
+function closeModal(id) { document.getElementById(id).hidden = true; }
+
+/* =========================================================
+   MASTER OPTIONS (dropdowns, datalists) — rebuilt whenever
+   drivers / transporters / areas change
+   ========================================================= */
+function renderMasterOptions() {
+  const activeDrivers = APP.drivers.filter(d => d.status !== "Inactive");
+  const activeTransporters = APP.transporters.filter(t => t.status !== "Inactive");
+  const activeAreaNames = APP.areas.filter(a => a.status !== "Inactive").map(a => a.name);
+  const recordAreaNames = APP.records.map(r => r.area).filter(Boolean);
+  const areas = [...new Set([...activeAreaNames, ...recordAreaNames])].sort();
+
+  // Filter bar selects
+  fillSelect("fDriver", activeDrivers.map(d => d.name), "All Drivers");
+  fillSelect("fMode", TRANSPORT_MODES, "All Modes");
+  fillSelect("fTransporter", activeTransporters.map(t => t.name), "All Transporters");
+  fillSelect("fArea", areas, "All Areas");
+
+  // Settings selects
+  fillSelect("setDefaultDriver", activeDrivers.map(d => d.name), "None");
+  fillSelect("setDefaultMode", TRANSPORT_MODES, null);
+
+  // Transporter mode select (masters modal)
+  fillSelect("trnMode", TRANSPORT_MODES, null);
+
+  // Datalists
+  fillDatalist("driverListOptions", activeDrivers.map(d => d.name));
+  fillDatalist("transporterListOptions", activeTransporters.map(t => t.name));
+  fillDatalist("areaListOptions", areas);
+  fillDatalist("modeListOptions", TRANSPORT_MODES);
+}
+
+function fillSelect(id, values, placeholderLabel) {
+  const sel = document.getElementById(id);
+  const prevValue = sel.value;
+  sel.innerHTML = "";
+  if (placeholderLabel !== null) {
+    const opt = document.createElement("option");
+    opt.value = ""; opt.textContent = placeholderLabel;
+    sel.appendChild(opt);
+  }
+  values.forEach(v => {
+    const opt = document.createElement("option");
+    opt.value = v; opt.textContent = v;
+    sel.appendChild(opt);
+  });
+  if (values.includes(prevValue) || prevValue === "") sel.value = prevValue;
+}
+
+function fillDatalist(id, values) {
+  const dl = document.getElementById(id);
+  dl.innerHTML = values.map(v => `<option value="${escapeHtml(v)}">`).join("");
+}
+
+/* =========================================================
+   DASHBOARD
+   ========================================================= */
+function renderDashboard() {
+  const records = APP.records;
+  const totalBundles = records.reduce((s, r) => s + toNum(r.bundles), 0);
+  const totalAmount = computeDedupedAmount(records); // shared bilty counted once
+  const exported = records.filter(r => r.exportStatus === "Exported").length;
+  const pending = records.length - exported;
+
+  document.getElementById("statTotalRecords").textContent = formatNumber(records.length);
+  document.getElementById("statTotalBundles").textContent = formatNumber(totalBundles);
+  document.getElementById("statTotalAmount").textContent = formatINR(totalAmount);
+  document.getElementById("statExported").textContent = formatNumber(exported);
+  document.getElementById("statPending").textContent = formatNumber(pending);
+
+  // Mode bars — derive mode via transporter lookup, fallback "Other"
+  const modeCounts = {};
+  TRANSPORT_MODES.forEach(m => modeCounts[m] = 0);
+  records.forEach(r => {
+    const mode = getModeForTransportName(r.transport) || "Other";
+    modeCounts[mode] = (modeCounts[mode] || 0) + 1;
+  });
+  const maxCount = Math.max(1, ...Object.values(modeCounts));
+  const wrap = document.getElementById("modeBars");
+  wrap.innerHTML = Object.entries(modeCounts)
+    .filter(([, c]) => c > 0)
+    .map(([mode, c]) => `
+      <div class="mode-row">
+        <span class="mode-name">${escapeHtml(mode)}</span>
+        <span class="mode-track"><span class="mode-fill" style="width:${(c / maxCount * 100).toFixed(0)}%"></span></span>
+        <span class="mode-count">${c}</span>
+      </div>`).join("") || `<p style="color:var(--ink-500);font-size:13.5px;">No records yet.</p>`;
+
+  // Recent records
+  const recent = [...records].sort((a, b) => (b.dateBooking || "").localeCompare(a.dateBooking || "")).slice(0, 6);
+  const tbody = document.querySelector("#recentTable tbody");
+  tbody.innerHTML = recent.map(r => `
+    <tr>
+      <td>${escapeHtml(formatDateDMY(r.dateBooking))}</td>
+      <td>${escapeHtml(r.party)}</td>
+      <td>${escapeHtml(r.area)}</td>
+      <td>${formatINR(r.amount)}</td>
+      <td>${statusBadge(r.exportStatus)}</td>
+    </tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:var(--ink-500);padding:20px;">No records yet.</td></tr>`;
+}
+
+function getModeForTransportName(transportName) {
+  const t = APP.transporters.find(t => t.name.toLowerCase() === (transportName || "").toLowerCase());
+  return t ? t.mode : null;
+}
+
+function statusBadge(status) {
+  if (status === "Exported") return `<span class="badge badge-exported">Exported</span>`;
+  return `<span class="badge badge-pending">Not Exported</span>`;
+}
+
+/* =========================================================
+   DISPATCH RECORDS PAGE
+   ========================================================= */
+function setupDispatchPage() {
+  document.getElementById("btnApplyFilter").addEventListener("click", applyFiltersFromInputs);
+  document.getElementById("btnResetFilter").addEventListener("click", resetFilters);
+  document.getElementById("viewTabs").addEventListener("click", (e) => {
+    const btn = e.target.closest(".view-tab");
+    if (!btn) return;
+    APP.view = btn.dataset.view;
+    APP.page = 1;
+    renderDispatchTable();
+  });
+  document.getElementById("btnEmptyReset").addEventListener("click", resetFilters);
+  document.getElementById("fSearch").addEventListener("input", debounce(applyFiltersFromInputs, 300));
+  ["fFromDate", "fToDate", "fDriver", "fMode", "fTransporter", "fArea"].forEach(id => {
+    document.getElementById(id).addEventListener("change", applyFiltersFromInputs);
+  });
+
+  document.getElementById("btnAddRow").addEventListener("click", () => openRecordModal(null));
+  document.getElementById("btnSaveRecord").addEventListener("click", saveRecordFromModal);
+
+  document.getElementById("btnExportReport").addEventListener("click", startExportFlow);
+  document.getElementById("btnConfirmExport").addEventListener("click", confirmExport);
+
+  document.getElementById("btnPrintTable").addEventListener("click", printDispatchTable);
+
+  document.getElementById("selectAllCheck").addEventListener("change", (e) => {
+    const rows = paginateRows(getFilteredRecords());
+    if (e.target.checked) rows.forEach(r => APP.selected.add(r.id));
+    else rows.forEach(r => APP.selected.delete(r.id));
+    renderDispatchTable();
+  });
+
+  document.querySelectorAll("#sheetTable thead th.sortable").forEach(th => {
+    th.addEventListener("click", () => {
+      const key = th.dataset.key;
+      APP.page = 1;
+      if (APP.sort.key === key) APP.sort.dir = APP.sort.dir === "asc" ? "desc" : "asc";
+      else { APP.sort.key = key; APP.sort.dir = "asc"; }
+      renderDispatchTable();
+    });
+  });
+
+  // Excel import/export
+  document.getElementById("btnImportExcel").addEventListener("click", () => {
+    document.getElementById("importFileInput").value = "";
+    document.getElementById("importPreviewWrap").hidden = true;
+    document.getElementById("btnConfirmImport").disabled = true;
+    APP.pendingImportRows = null;
+    openModal("modalImport");
+  });
+  document.getElementById("importFileInput").addEventListener("change", handleImportFile);
+  document.getElementById("btnConfirmImport").addEventListener("click", confirmImport);
+
+
+  document.getElementById("pager").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-pg]");
+    if (!b || b.disabled) return;
+    APP.page = Number(b.dataset.pg);
+    renderDispatchTable();
+    document.getElementById("sheetTable").scrollIntoView({ block: "start" });
+  });
+  document.getElementById("pager").addEventListener("change", (e) => {
+    if (e.target.id !== "pageSizeSelect") return;
+    APP.pageSize = Number(e.target.value);
+    APP.page = 1;
+    renderDispatchTable();
+  });
+
+  setupExportExcelDropdown();
+
+  // Delete confirm
+  document.getElementById("btnConfirmDelete").addEventListener("click", () => {
+    if (typeof APP.pendingDeleteFn === "function") APP.pendingDeleteFn();
+    closeModal("modalDelete");
+  });
+
+  // Report print
+  document.getElementById("btnPrintReport").addEventListener("click", () => window.print());
+  document.getElementById("btnSaveReportComment").addEventListener("click", saveReportComment);
+}
+
+function setupExportExcelDropdown() {
+  const btn = document.getElementById("btnExportExcel");
+  const wrap = document.createElement("div");
+  wrap.className = "dropdown-wrap";
+  btn.parentNode.insertBefore(wrap, btn);
+  wrap.appendChild(btn);
+  const menu = document.createElement("div");
+  menu.className = "dropdown-menu";
+  menu.hidden = true;
+  menu.innerHTML = `
+    <button type="button" data-scope="filtered">Export Filtered Records</button>
+    <button type="button" data-scope="all">Export All Records</button>`;
+  wrap.appendChild(menu);
+
+  btn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    menu.hidden = !menu.hidden;
+  });
+  menu.addEventListener("click", (e) => {
+    const scope = e.target.dataset.scope;
+    if (scope) { exportExcel(scope); menu.hidden = true; }
+  });
+  document.addEventListener("click", () => { menu.hidden = true; });
+}
+
+/* ---------- Filtering ---------- */
+function applyFiltersFromInputs() {
+  APP.page = 1;
+  APP.filters.from = document.getElementById("fFromDate").value;
+  APP.filters.to = document.getElementById("fToDate").value;
+  APP.filters.driver = document.getElementById("fDriver").value;
+  APP.filters.mode = document.getElementById("fMode").value;
+  APP.filters.transporter = document.getElementById("fTransporter").value;
+  APP.filters.area = document.getElementById("fArea").value;
+  APP.filters.search = document.getElementById("fSearch").value.trim().toLowerCase();
+  renderDispatchTable();
+}
+
+function resetFilters() {
+  APP.page = 1;
+  APP.filters = { from: "", to: "", driver: "", mode: "", transporter: "", area: "", search: "" };
+  document.getElementById("fFromDate").value = "";
+  document.getElementById("fToDate").value = "";
+  document.getElementById("fDriver").value = "";
+  document.getElementById("fMode").value = "";
+  document.getElementById("fTransporter").value = "";
+  document.getElementById("fArea").value = "";
+  document.getElementById("fSearch").value = "";
+  renderDispatchTable();
+}
+
+// Which section a record belongs to (used by the tabs above the table):
+//  Relocation = flagged as a relocation / local transport leg
+//  Railways   = transport mode is Train, OR shares a Bulty No with another record
+//  Regular    = everything else
+function getBultyCounts() {
+  const counts = {};
+  APP.records.forEach(r => {
+    const k = (r.bultyNo || "").trim().toLowerCase();
+    if (k) counts[k] = (counts[k] || 0) + 1;
+  });
+  return counts;
+}
+function getRecordCategory(r, bultyCounts) {
+  if (r.isRelocation) return "relocation";
+  const k = (r.bultyNo || "").trim().toLowerCase();
+  if (getModeForTransportName(r.transport) === "Train" || (k && bultyCounts[k] > 1)) return "railways";
+  return "regular";
+}
+
+function renderViewTabs() {
+  const bc = getBultyCounts();
+  const counts = { all: 0, regular: 0, railways: 0, relocation: 0 };
+  getFilteredRecords(true).forEach(r => { counts.all++; counts[getRecordCategory(r, bc)]++; });
+  document.querySelectorAll("#viewTabs .view-tab").forEach(btn => {
+    const v = btn.dataset.view;
+    btn.classList.toggle("active", v === APP.view);
+    btn.querySelector(".view-count").textContent = counts[v];
+  });
+}
+
+function getFilteredRecords(ignoreView) {
+  const f = APP.filters;
+  const bultyCounts = (!ignoreView && APP.view !== "all") ? getBultyCounts() : null;
+  let out = APP.records.filter(r => {
+    if (bultyCounts && getRecordCategory(r, bultyCounts) !== APP.view) return false;
+    if (f.from && (r.dateBooking || "") < f.from) return false;
+    if (f.to && (r.dateBooking || "") > f.to) return false;
+    if (f.driver && r.driver !== f.driver) return false;
+    if (f.mode && getModeForTransportName(r.transport) !== f.mode) return false;
+    if (f.transporter && r.transport !== f.transporter) return false;
+    if (f.area && r.area !== f.area) return false;
+    if (f.search) {
+      const hay = [r.party, r.area, r.invNo, r.bultyNo, r.transport, r.driver].join(" ").toLowerCase();
+      if (!hay.includes(f.search)) return false;
+    }
+    return true;
+  });
+
+  const { key, dir } = APP.sort;
+  out.sort((a, b) => {
+    let va = a[key], vb = b[key];
+    if (key === "amount" || key === "bundles" || key === "srlNo") { va = toNum(va); vb = toNum(vb); }
+    else { va = (va || "").toString().toLowerCase(); vb = (vb || "").toString().toLowerCase(); }
+    if (va < vb) return dir === "asc" ? -1 : 1;
+    if (va > vb) return dir === "asc" ? 1 : -1;
+    return 0;
+  });
+  return out;
+}
+
+/* ---------- Table rendering ---------- */
+function renderDispatchTable() {
+  const all = getFilteredRecords();
+  const rows = paginateRows(all); // only the current page is drawn
+  const tbody = document.getElementById("sheetBody");
+  const emptyState = document.getElementById("dispatchEmpty");
+  const scroll = document.getElementById("sheetScroll");
+
+  document.querySelectorAll("#sheetTable thead th.sortable").forEach(th => {
+    th.classList.remove("sort-asc", "sort-desc");
+    if (th.dataset.key === APP.sort.key) th.classList.add(APP.sort.dir === "asc" ? "sort-asc" : "sort-desc");
+  });
+
+  if (rows.length === 0) {
+    tbody.innerHTML = "";
+    emptyState.hidden = false;
+    document.getElementById("sheetTable").style.display = "none";
+  } else {
+    document.getElementById("sheetTable").style.display = "";
+    emptyState.hidden = true;
+    // Consecutive rows sharing a Bulty No show ONE merged Amount cell (like the export report)
+    const amtSpan = {}, amtSkip = new Set();
+    for (let i = 0; i < rows.length;) {
+      const key = (rows[i].bultyNo || "").trim().toLowerCase();
+      let j = i + 1;
+      if (key) while (j < rows.length && (rows[j].bultyNo || "").trim().toLowerCase() === key) j++;
+      if (j - i > 1) { amtSpan[i] = j - i; for (let k = i + 1; k < j; k++) amtSkip.add(k); }
+      i = j;
+    }
+    // Consecutive rows exported together (same Export No.) share ONE merged Charges cell
+    const chgSpan = {}, chgSkip = new Set();
+    for (let i = 0; i < rows.length;) {
+      const en = rows[i].exportStatus === "Exported" ? rows[i].exportNo : null;
+      let j = i + 1;
+      if (en !== null && en !== undefined && en !== "") while (j < rows.length && rows[j].exportStatus === "Exported" && String(rows[j].exportNo) === String(en)) j++;
+      if (j - i > 1) { chgSpan[i] = j - i; for (let k = i + 1; k < j; k++) chgSkip.add(k); }
+      i = j;
+    }
+    tbody.innerHTML = rows.map((r, i) => rowHTML(r, { span: amtSpan[i] || 0, skip: amtSkip.has(i), cSpan: chgSpan[i] || 0, cSkip: chgSkip.has(i) })).join("");
+  }
+
+  document.getElementById("filterResultCount").textContent = all.length
+    ? `Showing ${all.length} of ${APP.records.length} records`
+    : "";
+
+  renderViewTabs();
+  updateSelectionInfo(all);
+  renderSummaryBar(all);
+  renderPager(all.length);
+  bindRowEvents();
+}
+
+// Charges (Bus / Train parking, Railway handling, etc.) that were added to the export this record belongs to
+function getExportChargeInfo(exportNo) {
+  if (exportNo === null || exportNo === undefined || exportNo === "") return null;
+  const ex = APP.exports.find(e => Number(e.exportNo) === Number(exportNo));
+  if (!ex) return null;
+  const rd = ex.reportData || {};
+  let lines = (rd.charges || []).map(c => ({ name: c.label || "PAR.CHg", amount: toNum(c.amount), formula: c.formula || "" }));
+  if (!lines.length && toNum(rd.parCharges) > 0) lines = [{ name: "PAR.CHg", amount: toNum(rd.parCharges), formula: "" }];
+  return { exportNo: ex.exportNo, lines, total: lines.reduce((s, l) => s + l.amount, 0) };
+}
+
+function chargesCellHTML(r, amt) {
+  if (amt.cSkip) return "";
+  const rs = amt.cSpan > 1 ? ` rowspan="${amt.cSpan}"` : "";
+  const info = r.exportStatus === "Exported" ? getExportChargeInfo(r.exportNo) : null;
+  if (!info) return `<td class="charges-cell"${rs}></td>`;
+  const body = info.lines.length
+    ? info.lines.map(l => `<div class="chg-line"><span>${escapeHtml(l.name)}${l.formula ? ` <em>(${escapeHtml(l.formula)})</em>` : ""}</span><strong>${formatINR(l.amount)}</strong></div>`).join("")
+      + (info.lines.length > 1 ? `<div class="chg-line chg-total"><span>Total</span><strong>${formatINR(info.total)}</strong></div>` : "")
+    : `<div class="chg-none">No charges</div>`;
+  return `<td class="charges-cell"${rs}><div class="chg-export">Export No. ${escapeHtml(String(info.exportNo))}</div>${body}</td>`;
+}
+
+function rowHTML(r, amt) {
+  amt = amt || {};
+  const selected = APP.selected.has(r.id) ? "is-selected" : "";
+  const exportedClass = r.exportStatus === "Exported" ? "is-exported" : "";
+  const cell = (field, display, extraClass) => `<td data-field="${field}" class="editable-cell ${extraClass || ""}" title="Click to edit"><div class="cell-inner">${display}</div></td>`;
+  return `
+  <tr data-id="${r.id}" class="${selected} ${exportedClass}">
+    <td class="col-check"><input type="checkbox" class="row-check" ${APP.selected.has(r.id) ? "checked" : ""}></td>
+    <td class="row-index">${r.srlNo}</td>
+    ${cell("dateBooking", escapeHtml(formatDateDMY(r.dateBooking)))}
+    ${cell("dateEntry", escapeHtml(formatDateDMY(r.dateEntry)))}
+    ${cell("party", escapeHtml(r.party))}
+    ${cell("area", escapeHtml(r.area))}
+    ${cell("invNo", escapeHtml(r.invNo) + (r.isRelocation ? ` <span class="badge-mini" title="Relocation / Local Transport leg — duplicate invoice number allowed">R</span>` : ""))}
+    ${cell("bundles", formatNumber(r.bundles), "num-cell")}
+    ${cell("transport", escapeHtml(r.transport))}
+    ${cell("bultyNo", escapeHtml(r.bultyNo))}
+    ${amt.skip ? "" : (amt.span > 1
+      ? `<td data-field="amount" class="editable-cell num-cell merged-amount" rowspan="${amt.span}" title="One bilty = one price (shared by ${amt.span} records)"><div class="cell-inner">${formatINR(r.amount)} <span class="badge-shared">shared</span></div></td>`
+      : cell("amount", formatINR(r.amount), "num-cell"))}
+    ${chargesCellHTML(r, amt)}
+    ${cell("voucherSrlNo", escapeHtml(r.voucherSrlNo))}
+    ${cell("voucherNo", escapeHtml(r.voucherNo))}
+    ${cell("driver", escapeHtml(r.driver))}
+    <td>${statusBadge(r.exportStatus)}</td>
+    <td class="col-actions">
+      <div class="cell-actions">
+        <button class="icon-btn btn-sm" data-action="edit" title="Edit row">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+        </button>
+        <button class="icon-btn btn-sm" data-action="duplicate" title="Duplicate row">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+        </button>
+        <button class="icon-btn btn-sm" data-action="delete" title="Delete row">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>
+        </button>
+      </div>
+    </td>
+  </tr>`;
+}
+
+function bindRowEvents() {
+  const tbody = document.getElementById("sheetBody");
+  tbody.querySelectorAll("tr").forEach(tr => {
+    const id = tr.dataset.id;
+
+    // Click any spreadsheet cell to edit it inline, spreadsheet-style
+    tr.querySelectorAll("td.editable-cell").forEach(td => {
+      td.addEventListener("click", () => {
+        if (td.querySelector(".cell-edit-input")) return;
+        const record = APP.records.find(r => r.id === id);
+        const field = td.dataset.field;
+        if (field === "amount") {
+          const match = findMatchingBultyRecord(record.bultyNo, record.id);
+          if (match) {
+            showToast(`Amount is locked — Bulty No. "${record.bultyNo}" is shared with another record, and one bilty has one price (${formatINR(match.amount)}). Change the Bulty No. first if this shouldn't be grouped.`, "error");
+            return;
+          }
+        }
+        const fieldDef = RECORD_FIELDS.find(f => f.key === field);
+        startCellEdit(td, record, field, fieldDef.type);
+      });
+    });
+
+    tr.querySelector(".row-check").addEventListener("change", (e) => {
+      if (e.target.checked) APP.selected.add(id); else APP.selected.delete(id);
+      tr.classList.toggle("is-selected", e.target.checked);
+      updateSelectionInfo(getFilteredRecords());
+    });
+
+    tr.querySelector('[data-action="edit"]').addEventListener("click", () => openRecordModal(id));
+    tr.querySelector('[data-action="duplicate"]').addEventListener("click", () => duplicateRecord(id));
+    tr.querySelector('[data-action="delete"]').addEventListener("click", () => {
+      APP.pendingDeleteFn = () => deleteRecord(id);
+      document.getElementById("modalDeleteText").textContent = "This record will be removed from the master sheet.";
+      openModal("modalDelete");
+    });
+  });
+}
+
+const CELL_FIELD_ORDER = RECORD_FIELDS.map(f => f.key);
+
+function startCellEdit(td, record, field, type) {
+  const fieldDef = RECORD_FIELDS.find(f => f.key === field);
+  const currentValue = record[field] ?? "";
+  let inputEl;
+
+  if (type === "date") {
+    td.innerHTML = `<input type="date" class="cell-edit-input" value="${escapeHtml(currentValue)}">`;
+  } else if (type === "number") {
+    td.innerHTML = `<input type="number" min="0" step="0.01" class="cell-edit-input" value="${currentValue === "" ? 0 : currentValue}">`;
+  } else if (type === "text-list") {
+    td.innerHTML = `<input type="text" list="${fieldDef.list}" class="cell-edit-input" value="${escapeHtml(currentValue)}">`;
+  } else {
+    td.innerHTML = `<input type="text" class="cell-edit-input" value="${escapeHtml(currentValue)}">`;
+  }
+  inputEl = td.querySelector(".cell-edit-input");
+  inputEl.focus();
+  if (inputEl.select) inputEl.select();
+
+  let committed = false;
+  function commit(moveDir) {
+    if (committed) return;
+    committed = true;
+    let val = inputEl.value;
+    if (type === "number") {
+      if (val !== "" && !isValidNumber(val)) {
+        showToast(field === "amount" ? "Please enter a valid amount." : "Please enter a valid number.", "error");
+        val = record[field];
+      } else {
+        val = toNum(val);
+      }
+    }
+    if (field === "invNo") {
+      const dupes = findDuplicateInvoiceNumbers(val, record.id, record.isRelocation);
+      if (dupes.length) {
+        showToast(`Invoice No. "${dupes.join(", ")}" already exists on another record. Please use a unique invoice number, or mark this record as a Relocation leg via Edit.`, "error");
+        renderDispatchTable();
+        return;
+      }
+    }
+    record[field] = val;
+    if (field === "bultyNo") {
+      const match = findMatchingBultyRecord(val, record.id);
+      if (match && toNum(record.amount) !== toNum(match.amount)) {
+        record.amount = match.amount;
+        showToast(`Amount auto-set to ${formatINR(match.amount)} to match other records sharing Bulty No. "${val}".`, "success");
+      }
+    }
+    saveRecords();
+    syncRecordFieldToExport(record, field);
+    if (field === "bultyNo") syncRecordFieldToExport(record, "amount");
+    renderMasterOptions();
+    renderDispatchTable();
+    renderDashboard();
+    renderExportRegister();
+    if (moveDir) focusCell(record.id, field, moveDir);
+  }
+
+  inputEl.addEventListener("blur", () => commit(null));
+  inputEl.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit("down"); }
+    else if (e.key === "Tab") { e.preventDefault(); commit(e.shiftKey ? "left" : "right"); }
+    else if (e.key === "Escape") { e.preventDefault(); committed = true; renderDispatchTable(); }
+  });
+}
+
+function focusCell(recordId, field, dir) {
+  let row = document.querySelector(`#sheetBody tr[data-id="${recordId}"]`);
+  if (!row) return;
+  let idx = CELL_FIELD_ORDER.indexOf(field);
+
+  if (dir === "right") {
+    idx++;
+    if (idx >= CELL_FIELD_ORDER.length) { idx = 0; row = row.nextElementSibling; }
+  } else if (dir === "left") {
+    idx--;
+    if (idx < 0) { idx = CELL_FIELD_ORDER.length - 1; row = row.previousElementSibling; }
+  } else if (dir === "down") {
+    row = row.nextElementSibling;
+  }
+  if (!row) return;
+  let nextField = CELL_FIELD_ORDER[idx];
+  let td = row.querySelector(`td[data-field="${nextField}"]`);
+  // a merged (rowspan) Amount cell is missing on grouped rows — step past it
+  if (!td && (dir === "right" || dir === "left")) {
+    idx += dir === "right" ? 1 : -1;
+    if (idx >= CELL_FIELD_ORDER.length) idx = 0;
+    if (idx < 0) idx = CELL_FIELD_ORDER.length - 1;
+    nextField = CELL_FIELD_ORDER[idx];
+    td = row.querySelector(`td[data-field="${nextField}"]`);
+  }
+  const nextRecord = APP.records.find(r => r.id === row.dataset.id);
+  if (td && nextRecord) {
+    const fieldDef = RECORD_FIELDS.find(f => f.key === nextField);
+    startCellEdit(td, nextRecord, nextField, fieldDef.type);
+  }
+}
+
+
+function updateSelectionInfo(rows) {
+  const count = rows.filter(r => APP.selected.has(r.id)).length;
+  const pageRows = paginateRows(rows);
+  const onPage = pageRows.filter(r => APP.selected.has(r.id)).length;
+  document.getElementById("selectionInfo").textContent = count > 0 ? `${count} selected` : "";
+  document.getElementById("selectAllCheck").checked = pageRows.length > 0 && onPage === pageRows.length;
+}
+
+const PAGE_SIZES = [5, 10, 20, 50, 100, 0];
+
+// Slices the filtered rows into pages. Rows sharing a Bulty No. are never split across pages.
+function paginateRows(rows) {
+  const size = APP.pageSize;
+  if (!size) { APP.page = 1; APP.totalPages = 1; APP.pageStart = 0; return rows; }
+  const pages = [];
+  let cur = [];
+  for (let i = 0; i < rows.length;) {
+    const key = (rows[i].bultyNo || "").trim().toLowerCase();
+    let j = i + 1;
+    if (key) while (j < rows.length && (rows[j].bultyNo || "").trim().toLowerCase() === key) j++;
+    if (cur.length && cur.length + (j - i) > size) { pages.push(cur); cur = []; }
+    for (let k = i; k < j; k++) cur.push(rows[k]);
+    i = j;
+  }
+  if (cur.length) pages.push(cur);
+  APP.totalPages = Math.max(1, pages.length);
+  APP.page = Math.min(Math.max(1, APP.page), APP.totalPages);
+  APP.pageStart = pages.slice(0, APP.page - 1).reduce((s, p) => s + p.length, 0);
+  return pages[APP.page - 1] || [];
+}
+
+function renderPager(total) {
+  const el = document.getElementById("pager");
+  if (!el) return;
+  if (!total) { el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  const from = APP.pageStart + 1;
+  const to = APP.pageStart + paginateRows(getFilteredRecords()).length;
+  const cur = APP.page, last = APP.totalPages;
+  const nums = [];
+  for (let p = 1; p <= last; p++) if (p === 1 || p === last || Math.abs(p - cur) <= 1) nums.push(p);
+  let btns = "", prev = 0;
+  nums.forEach(p => {
+    if (prev && p - prev > 1) btns += `<span class="pager-gap">…</span>`;
+    btns += `<button type="button" class="pager-btn ${p === cur ? "active" : ""}" data-pg="${p}">${p}</button>`;
+    prev = p;
+  });
+  el.innerHTML = `
+    <span class="pager-info">Showing ${from}–${to} of ${total} records</span>
+    <div class="pager-nav">
+      <button type="button" class="pager-btn" data-pg="${cur - 1}" ${cur <= 1 ? "disabled" : ""}>‹ Previous</button>
+      ${btns}
+      <button type="button" class="pager-btn" data-pg="${cur + 1}" ${cur >= last ? "disabled" : ""}>Next ›</button>
+    </div>
+    <label class="pager-size">Rows per page
+      <select id="pageSizeSelect">${PAGE_SIZES.map(n => `<option value="${n}" ${n === APP.pageSize ? "selected" : ""}>${n || "All"}</option>`).join("")}</select>
+    </label>`;
+}
+
+function renderSummaryBar(rows) {
+  const totalBundles = rows.reduce((s, r) => s + toNum(r.bundles), 0);
+  const totalAmount = computeDedupedAmount(rows); // shared bilty counted once
+  document.getElementById("sumRecords").textContent = formatNumber(rows.length);
+  document.getElementById("sumBundles").textContent = formatNumber(totalBundles);
+  document.getElementById("sumAmount").textContent = formatINR(totalAmount);
+}
+
+/* ---------- Add / Edit record modal ---------- */
+function openRecordModal(id) {
+  APP.editingRecordId = id;
+  const record = id ? APP.records.find(r => r.id === id) : null;
+  document.getElementById("modalRecordTitle").textContent = record ? `Edit Record — SRL ${record.srlNo}` : "Add Dispatch Record";
+
+  const grid = document.getElementById("recordFormGrid");
+  grid.innerHTML = RECORD_FIELDS.map(f => fieldHTML(f, record)).join("");
+  document.getElementById("rf_isRelocation").checked = record ? !!record.isRelocation : APP.view === "relocation";
+  setupBultyAmountLock();
+  openModal("modalRecord");
+  const firstInput = grid.querySelector("input, select");
+  if (firstInput) setTimeout(() => firstInput.focus(), 30);
+}
+
+// A Bulty No represents one physical bilty — every record filed under the same
+// Bulty No must share the same price, not a separately-typed amount each time.
+function findMatchingBultyRecord(bultyNo, excludeId) {
+  const key = (bultyNo || "").trim();
+  if (!key) return null;
+  return APP.records.find(r => r.id !== excludeId && (r.bultyNo || "").trim().toLowerCase() === key.toLowerCase()) || null;
+}
+
+function setupBultyAmountLock() {
+  const bultyInput = document.getElementById("rf_bultyNo");
+  const amountInput = document.getElementById("rf_amount");
+  if (!bultyInput || !amountInput) return;
+
+  function refresh() {
+    const match = findMatchingBultyRecord(bultyInput.value, APP.editingRecordId);
+    let hint = document.getElementById("bultyAmountHint");
+    if (match) {
+      amountInput.value = match.amount;
+      amountInput.disabled = true;
+      if (!hint) {
+        hint = document.createElement("p");
+        hint.id = "bultyAmountHint";
+        hint.className = "field-hint";
+        amountInput.closest(".field").appendChild(hint);
+      }
+      hint.textContent = `Locked — this Bulty No. is already used by another record, and one bilty has one shared price (${formatINR(match.amount)}).`;
+    } else {
+      amountInput.disabled = false;
+      if (hint) hint.remove();
+    }
+  }
+  bultyInput.addEventListener("input", refresh);
+  refresh();
+}
+
+function fieldHTML(f, record) {
+  const value = record ? (record[f.key] ?? "") : (f.key === "driver" ? APP.settings.defaultDriver || "" : "");
+  const id = "rf_" + f.key;
+  const req = f.required ? "required" : "";
+  if (f.type === "date") {
+    return `<div class="field"><label for="${id}">${f.label}</label><input type="date" id="${id}" ${req} value="${escapeHtml(value)}"></div>`;
+  }
+  if (f.type === "number") {
+    return `<div class="field"><label for="${id}">${f.label}</label><input type="number" id="${id}" min="0" step="0.01" ${req} value="${escapeHtml(value)}"></div>`;
+  }
+  if (f.type === "text-list") {
+    return `<div class="field"><label for="${id}">${f.label}</label><input type="text" id="${id}" list="${f.list}" ${req} value="${escapeHtml(value)}"></div>`;
+  }
+  return `<div class="field"><label for="${id}">${f.label}</label><input type="text" id="${id}" ${req} value="${escapeHtml(value)}"></div>`;
+}
+
+/* ---------- Invoice No. duplicate check ---------- */
+// Invoice numbers can be comma-separated (e.g. "CB5620, CB5649"). This checks
+// each individual invoice number against every other record in the system.
+function getExistingInvoiceNumbers(excludeRecordId) {
+  const set = new Set();
+  APP.records.forEach(r => {
+    if (r.id === excludeRecordId) return;
+    (r.invNo || "").split(",").forEach(tok => {
+      const t = tok.trim().toUpperCase();
+      if (t) set.add(t);
+    });
+  });
+  return set;
+}
+
+function findDuplicateInvoiceNumbers(invNoString, excludeRecordId, skipCheck) {
+  if (skipCheck) return [];
+  const existing = getExistingInvoiceNumbers(excludeRecordId);
+  const tokens = (invNoString || "").split(",").map(t => t.trim()).filter(Boolean);
+  const seenHere = new Set();
+  const dupes = [];
+  tokens.forEach(t => {
+    const key = t.toUpperCase();
+    if (existing.has(key) || seenHere.has(key)) dupes.push(t);
+    seenHere.add(key);
+  });
+  return dupes;
+}
+
+function saveRecordFromModal() {
+  const data = {};
+  for (const f of RECORD_FIELDS) {
+    const el = document.getElementById("rf_" + f.key);
+    let val = el.value;
+    if (f.type === "number") {
+      if (val !== "" && !isValidNumber(val)) {
+        showToast(f.key === "amount" ? "Please enter a valid amount." : "Please enter a valid number.", "error");
+        el.focus();
+        return;
+      }
+      val = toNum(val);
+    }
+    if (f.required && (val === "" || val === null)) {
+      showToast(`${f.label} is required.`, "error");
+      el.focus();
+      return;
+    }
+    data[f.key] = val;
+  }
+
+  data.isRelocation = document.getElementById("rf_isRelocation").checked;
+
+  const bultyMatch = findMatchingBultyRecord(data.bultyNo, APP.editingRecordId);
+  if (bultyMatch) data.amount = bultyMatch.amount;
+
+  const dupInvoices = findDuplicateInvoiceNumbers(data.invNo, APP.editingRecordId, data.isRelocation);
+  if (dupInvoices.length) {
+    showToast(`Invoice No. "${dupInvoices.join(", ")}" already exists on another record. Please use a unique invoice number, or check "Relocation / Local Transport leg" if this is intentional.`, "error");
+    document.getElementById("rf_invNo").focus();
+    return;
+  }
+
+  if (APP.editingRecordId) {
+    const rec = APP.records.find(r => r.id === APP.editingRecordId);
+    const before = { ...rec };
+    Object.assign(rec, data);
+    SYNCABLE_REPORT_FIELDS.forEach(f => {
+      if (String(before[f] ?? "") !== String(rec[f] ?? "")) syncRecordFieldToExport(rec, f);
+    });
+    showToast(rec.exportNo ? "Changes saved. Already-exported report updated too." : "Changes saved.", "success");
+  } else {
+    const nextSrl = APP.records.reduce((m, r) => Math.max(m, toNum(r.srlNo)), 0) + 1;
+    APP.records.push({
+      id: uid("rec"),
+      srlNo: nextSrl,
+      exportStatus: "Not Exported",
+      exportNo: null,
+      ...data,
+    });
+    showToast("Record added successfully.", "success");
+  }
+  saveRecords();
+  renderMasterOptions();
+  closeModal("modalRecord");
+  renderDispatchTable();
+  renderDashboard();
+  renderExportRegister();
+}
+
+function duplicateRecord(id) {
+  const rec = APP.records.find(r => r.id === id);
+  if (!rec) return;
+  const nextSrl = APP.records.reduce((m, r) => Math.max(m, toNum(r.srlNo)), 0) + 1;
+  const copy = { ...rec, id: uid("rec"), srlNo: nextSrl, exportStatus: "Not Exported", exportNo: null };
+  APP.records.push(copy);
+  saveRecords();
+  renderDispatchTable();
+  renderDashboard();
+  showToast("Row duplicated.", "success");
+}
+
+function deleteRecord(id) {
+  APP.records = APP.records.filter(r => r.id !== id);
+  APP.selected.delete(id);
+  saveRecords();
+  renderDispatchTable();
+  renderDashboard();
+  renderMasterOptions();
+  showToast("Record deleted.", "success");
+}
+
+/* ---------- Print (plain table) ---------- */
+function printDispatchTable() {
+  const rows = getFilteredRecords();
+  const headers = ["SRL", "Date of Booking", "Party / School", "Area", "Inv. No.", "Bundles", "Transport", "Bulty No", "Amount", "Driver", "Status"];
+  const bodyRows = rows.map(r => `
+    <tr>
+      <td>${r.srlNo}</td>
+      <td>${escapeHtml(formatDateDMY(r.dateBooking))}</td>
+      <td>${escapeHtml(r.party)}</td>
+      <td>${escapeHtml(r.area)}</td>
+      <td>${escapeHtml(r.invNo)}</td>
+      <td>${formatNumber(r.bundles)}</td>
+      <td>${escapeHtml(r.transport)}</td>
+      <td>${escapeHtml(r.bultyNo)}</td>
+      <td>${formatINR(r.amount)}</td>
+      <td>${escapeHtml(r.driver)}</td>
+      <td>${r.exportStatus}</td>
+    </tr>`).join("");
+  const totalAmount = computeDedupedAmount(rows); // shared bilty counted once
+  const totalBundles = rows.reduce((s, r) => s + toNum(r.bundles), 0);
+
+  document.getElementById("tablePrintArea").innerHTML = `
+    <h2 style="margin:0 0 4px;">Dispatch Records</h2>
+    <p style="margin:0 0 14px;font-size:12px;color:#333;">Generated ${escapeHtml(formatDateDMY(todayISO()))} — ${rows.length} records</p>
+    <table class="print-table">
+      <thead><tr>${headers.map(h => `<th>${h}</th>`).join("")}</tr></thead>
+      <tbody>${bodyRows}</tbody>
+      <tfoot><tr><td colspan="5"><strong>Total</strong></td><td><strong>${formatNumber(totalBundles)}</strong></td><td></td><td></td><td><strong>${formatINR(totalAmount)}</strong></td><td colspan="2"></td></tr></tfoot>
+    </table>`;
+  window.print();
+}
+
+/* =========================================================
+   EXPORT ENGINE (₹ limit, sequential numbering, register)
+   ========================================================= */
+function computeExportBatch(candidateRows, limit) {
+  const eligible = candidateRows.filter(r => r.exportStatus !== "Exported");
+  let running = 0;
+  const included = [];
+  const seenBulty = new Set();
+  let stoppedAt = -1;
+  for (let i = 0; i < eligible.length; i++) {
+    // a shared bilty's price counts once, so later records on the same bilty add 0
+    const bKey = (eligible[i].bultyNo || "").trim().toLowerCase();
+    const amt = (bKey && seenBulty.has(bKey)) ? 0 : toNum(eligible[i].amount);
+    if (running + amt <= limit) {
+      running += amt;
+      if (bKey) seenBulty.add(bKey);
+      included.push(eligible[i]);
+    } else {
+      stoppedAt = i;
+      break;
+    }
+  }
+  const excluded = stoppedAt === -1 ? [] : eligible.slice(stoppedAt);
+  const excludedTotal = computeDedupedAmount(excluded);
+  return {
+    eligible, included, excluded,
+    includedTotal: running,
+    excludedTotal,
+    firstRecordTooLarge: included.length === 0 && eligible.length > 0 && toNum(eligible[0].amount) > limit,
+  };
+}
+
+function startExportFlow() {
+  const filtered = getFilteredRecords();
+  const selectedRows = filtered.filter(r => APP.selected.has(r.id));
+  const usingSelection = selectedRows.length > 0;
+  const candidateRows = usingSelection ? selectedRows : filtered;
+
+  const limit = toNum(APP.settings.exportLimit) || 0;
+  const batch = computeExportBatch(candidateRows, limit);
+  APP.pendingExportBatch = batch;
+  APP.pendingExportUsingSelection = usingSelection;
+
+  const nextExportNo = getNextExportNo();
+  const nextVoNo = getNextVoNo();
+
+  const body = document.getElementById("exportPreviewBody");
+
+  if (batch.eligible.length === 0) {
+    body.innerHTML = `<div class="export-error">${usingSelection ? "The records you selected have already been exported." : "All filtered records have already been exported, or no records match the current filters."} Adjust your selection or filters and try again.</div>`;
+    document.getElementById("btnConfirmExport").disabled = true;
+    openModal("modalExportPreview");
+    return;
+  }
+
+  if (batch.firstRecordTooLarge) {
+    body.innerHTML = `
+      <div class="export-error">
+        This record cannot be included because its amount exceeds the current export limit of ${formatINR(limit)}.
+        You can raise the limit in Settings if this is expected.
+      </div>`;
+    document.getElementById("btnConfirmExport").disabled = true;
+    openModal("modalExportPreview");
+    return;
+  }
+
+  document.getElementById("btnConfirmExport").disabled = false;
+  const remainingCount = batch.excluded.length;
+
+  body.innerHTML = `
+    <div class="export-source-note">${usingSelection ? `Exporting <strong>${selectedRows.length} selected record(s)</strong> only.` : `No records selected — exporting from all <strong>${filtered.length} filtered record(s)</strong>.`}</div>
+    <div class="export-summary-grid">
+      <div class="row"><span>Export No.</span><span>${nextExportNo}</span></div>
+      <div class="row"><span>VO.NO.</span><span>${nextVoNo}</span></div>
+      <div class="row"><span>Maximum Amount</span><span>${formatINR(limit)}</span></div>
+      <div class="row"><span>Records Available</span><span>${batch.eligible.length}</span></div>
+      <div class="row"><span>Records To Export</span><span>${batch.included.length}</span></div>
+      <div class="row"><span>Total Amount</span><span>${formatINR(batch.includedTotal)}</span></div>
+      <div class="row"><span>Remaining Records</span><span>${remainingCount}</span></div>
+      <div class="row"><span>Remaining Amount</span><span>${formatINR(batch.excludedTotal)}</span></div>
+    </div>
+    <div class="field">
+      <label>Parking / Local Transport Charges</label>
+      <div id="exChargesContainer"></div>
+      <button type="button" class="btn btn-secondary btn-sm" id="btnAddCharge">+ Add Charge</button>
+    </div>
+    <div class="field">
+      <label class="checkbox-label"><input type="checkbox" id="exRailwayChargeToggle"> Add Railway Bundle Handling Charge (loading + marking + scanning)</label>
+      <div id="exRailwayChargeRow" class="railway-charge-row" hidden>
+        <span>${formatNumber(batch.included.reduce((s, r) => s + toNum(r.bundles), 0))} bundles ×</span>
+        <input type="number" id="exRailwayRate" min="0" step="0.01" placeholder="Rate per bundle">
+        <span id="exRailwayComputedAmount">= ₹0.00</span>
+        <input type="text" id="exRailwayMessage" class="charge-message" list="chargeMessageOptions" value="${escapeHtml(DEFAULT_RAILWAY_MESSAGE)}" placeholder="Message shown on the report">
+      </div>
+    </div>
+    <div class="field">
+      <label for="exComment">Comment / Remark (optional)</label>
+      <textarea id="exComment" rows="2" placeholder="e.g. Driver arrived late, extra charge waived, etc."></textarea>
+    </div>
+    ${remainingCount > 0 ? `<div class="export-warning">Record ${escapeHtml(batch.excluded[0].party || "")} (SRL ${batch.excluded[0].srlNo}) will not be included because adding it would exceed the ${formatINR(limit)} limit.</div>` : ""}
+  `;
+
+  // Pre-fill one charge row per transport mode found in this export (e.g. Bus + Train),
+  // so the user usually just needs to type in the amounts. They can add/remove rows freely.
+  const modesInBatch = [...new Set(batch.included.map(r => getModeForTransportName(r.transport)).filter(Boolean))];
+  if (modesInBatch.length) {
+    modesInBatch.forEach(m => addChargeRow(`${m} Parking Charge`, "", DEFAULT_CHARGE_MESSAGE));
+  } else {
+    addChargeRow("", "", DEFAULT_CHARGE_MESSAGE);
+  }
+  document.getElementById("btnAddCharge").addEventListener("click", () => addChargeRow("", "", DEFAULT_CHARGE_MESSAGE));
+  document.getElementById("exChargesContainer").addEventListener("click", (e) => {
+    const removeBtn = e.target.closest(".charge-remove");
+    if (removeBtn) removeBtn.closest(".charge-row").remove();
+  });
+
+  const railwayTotalBundles = batch.included.reduce((s, r) => s + toNum(r.bundles), 0);
+  const railwayToggle = document.getElementById("exRailwayChargeToggle");
+  const railwayRow = document.getElementById("exRailwayChargeRow");
+  const railwayRate = document.getElementById("exRailwayRate");
+  const railwayComputed = document.getElementById("exRailwayComputedAmount");
+  function updateRailwayComputed() {
+    railwayComputed.textContent = "= " + formatINR(railwayTotalBundles * toNum(railwayRate.value));
+  }
+  railwayToggle.addEventListener("change", () => { railwayRow.hidden = !railwayToggle.checked; updateRailwayComputed(); });
+  railwayRate.addEventListener("input", updateRailwayComputed);
+
+  openModal("modalExportPreview");
+}
+
+// Each charge line on a report carries its OWN message (e.g. "CHARGES OF RELOCATING FROM BHOPAL.")
+const DEFAULT_CHARGE_MESSAGE = "Local transport booking cost from publication.";
+const DEFAULT_RAILWAY_MESSAGE = "Booking charges from bundle publication to Railways including loading+marking+scanning charges.";
+
+function chargeRowHTML(label, amount, message) {
+  return `
+    <div class="charge-row">
+      <input type="text" class="charge-label" list="chargeLabelOptions" placeholder="e.g. Bus Parking Charge" value="${escapeHtml(label || "")}">
+      <input type="number" class="charge-amount" min="0" step="0.01" placeholder="Amount" value="${amount === "" || amount === undefined ? "" : amount}">
+      <button type="button" class="icon-btn btn-sm charge-remove" title="Remove charge">
+        <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+      </button>
+      <input type="text" class="charge-message" list="chargeMessageOptions" placeholder="Message shown on the report, e.g. CHARGES OF RELOCATING FROM BHOPAL." value="${escapeHtml(message === undefined ? "" : message)}">
+    </div>`;
+}
+
+function addChargeRow(label, amount, message) {
+  const container = document.getElementById("exChargesContainer");
+  if (!container) return;
+  container.insertAdjacentHTML("beforeend", chargeRowHTML(label, amount, message));
+}
+
+function getNextExportNo() {
+  if (APP.exports.length === 0) return toNum(APP.settings.startExportNo) || 577;
+  return Math.max(...APP.exports.map(e => e.exportNo)) + 1;
+}
+function getNextVoNo() {
+  if (APP.exports.length === 0) return toNum(APP.settings.startVoNo) || 587;
+  return Math.max(...APP.exports.map(e => e.voNo)) + 1;
+}
+
+function getDriverTypeLabel(name) {
+  if (!name) return "—";
+  const d = APP.drivers.find(d => d.name.toLowerCase() === name.toLowerCase());
+  return d ? `${d.name} (${d.type.toUpperCase()})` : name;
+}
+
+// Records sharing a Bulty No represent one physical bilty with one price — count
+// that shared amount once, not once per record, when totalling what to bill.
+function computeDedupedAmount(rows) {
+  let total = 0;
+  const seenBulty = new Set();
+  rows.forEach(r => {
+    const key = (r.bultyNo || "").trim().toLowerCase();
+    if (key && seenBulty.has(key)) return;
+    if (key) seenBulty.add(key);
+    total += toNum(r.amount);
+  });
+  return total;
+}
+
+function computeDriverLabel(rows) {
+  const driverNames = [...new Set(rows.map(r => r.driver).filter(Boolean))];
+  return driverNames.length === 1 ? getDriverTypeLabel(driverNames[0]) : (driverNames.length > 1 ? "Multiple" : "—");
+}
+function computeModeLabel(rows) {
+  const modes = [...new Set(rows.map(r => getModeForTransportName(r.transport)).filter(Boolean))];
+  return modes.length === 1 ? modes[0] : (modes.length > 1 ? "Mixed" : "—");
+}
+
+// Fields that appear on a printed Sales Expenses report — only these are worth
+// pushing into an already-generated export when the source record is corrected.
+const SYNCABLE_REPORT_FIELDS = ["party", "area", "invNo", "bundles", "transport", "bultyNo", "amount", "driver", "dateBooking"];
+
+// If a record has already been exported and one of its report-visible fields is
+// corrected afterwards, push that correction into the saved report snapshot too,
+// and flag the field so the report visibly shows it was fixed after export.
+function syncRecordFieldToExport(record, field) {
+  if (!record.exportNo || !SYNCABLE_REPORT_FIELDS.includes(field)) return;
+  const exp = APP.exports.find(e => e.exportNo === record.exportNo);
+  if (!exp || !exp.reportData) return;
+  // Exports created before this feature don't have a row.id yet — fall back to
+  // matching by SRL No (still unique within one export) and backfill the id.
+  let row = exp.reportData.rows.find(r => r.id === record.id);
+  if (!row) row = exp.reportData.rows.find(r => !r.id && r.srlNo === record.srlNo);
+  if (!row) return;
+  if (!row.id) row.id = record.id;
+
+  const newVal = (field === "bundles" || field === "amount") ? toNum(record[field]) : record[field];
+  if (row[field] === newVal) return;
+
+  row[field] = newVal;
+  row.editedFields = row.editedFields || [];
+  if (!row.editedFields.includes(field)) row.editedFields.push(field);
+
+  const rd = exp.reportData;
+  rd.totalBundles = rd.rows.reduce((s, r) => s + toNum(r.bundles), 0);
+  rd.totalAmount = computeDedupedAmount(rd.rows);
+
+  // A bundle edit changes any per-bundle charge (e.g. "Railway Bundle Handling Charge",
+  // stored with a "count*rate" formula) — recompute those using the new bundle total,
+  // keeping the same rate, then re-total the charges.
+  if (field === "bundles" && Array.isArray(rd.charges)) {
+    rd.charges.forEach(c => {
+      if (!c.formula) return;
+      const m = /^\s*[\d.]+\s*\*\s*([\d.]+)\s*$/.exec(c.formula);
+      if (!m) return;
+      const rate = toNum(m[1]);
+      c.amount = rd.totalBundles * rate;
+      c.formula = `${rd.totalBundles}*${rate}`;
+    });
+    rd.parCharges = rd.charges.reduce((s, c) => s + toNum(c.amount), 0);
+  }
+
+  rd.grandTotal = rd.totalAmount + toNum(rd.parCharges);
+  rd.driverLabel = computeDriverLabel(rd.rows);
+
+  exp.totalAmount = rd.totalAmount;
+  exp.driver = rd.driverLabel;
+  exp.transportMode = computeModeLabel(rd.rows);
+
+  saveExports();
+}
+
+function confirmExport() {
+  const batch = APP.pendingExportBatch;
+  if (!batch || batch.included.length === 0) return;
+
+  const exportNo = getNextExportNo();
+  const voNo = getNextVoNo();
+  const exportDate = todayISO();
+
+  const rows = batch.included.map((r, idx) => ({
+    id: r.id,
+    seNo: idx + 1,
+    srlNo: r.srlNo,
+    party: r.party, area: r.area, invNo: r.invNo, bundles: toNum(r.bundles),
+    transport: r.transport, bultyNo: r.bultyNo, amount: toNum(r.amount),
+    driver: r.driver, dateBooking: r.dateBooking,
+    editedFields: [],
+  }));
+
+  const totalBundles = rows.reduce((s, r) => s + r.bundles, 0);
+  const totalAmount = computeDedupedAmount(rows);
+  // Parking / local transport charges — one or more named line items entered at export time
+  const charges = Array.from(document.querySelectorAll("#exChargesContainer .charge-row")).map(row => ({
+    label: row.querySelector(".charge-label").value.trim(),
+    description: row.querySelector(".charge-message").value.trim(),
+    amount: toNum(row.querySelector(".charge-amount").value),
+  })).filter(c => c.label && c.amount > 0);
+
+  const railwayToggleEl = document.getElementById("exRailwayChargeToggle");
+  if (railwayToggleEl && railwayToggleEl.checked) {
+    const rate = toNum(document.getElementById("exRailwayRate").value);
+    if (rate > 0) {
+      charges.push({
+        label: "Railway Bundle Handling Charge",
+        description: (document.getElementById("exRailwayMessage").value || "").trim(),
+        amount: totalBundles * rate,
+        formula: `${totalBundles}*${rate}`,
+      });
+    }
+  }
+
+  const parCharges = charges.reduce((s, c) => s + c.amount, 0);
+  const grandTotal = totalAmount + parCharges;
+  const commentInput = document.getElementById("exComment");
+  const comment = commentInput ? commentInput.value.trim() : "";
+
+  const driverLabel = computeDriverLabel(rows);
+  const modeLabel = computeModeLabel(rows);
+  const bookingDates = rows.map(r => r.dateBooking).filter(Boolean).sort();
+  const bookingDate = bookingDates.length ? bookingDates[0] : exportDate;
+
+  const srlNumbers = batch.included.map(r => toNum(r.srlNo));
+  const exportRecord = {
+    exportNo, voNo, exportDate,
+    srlFrom: Math.min(...srlNumbers), srlTo: Math.max(...srlNumbers),
+    recordCount: rows.length, totalAmount, driver: driverLabel, transportMode: modeLabel,
+    status: "Completed",
+    reportData: {
+      exportNo, voNo, exportDate, bookingDate,
+      rows, totalBundles, totalAmount, parCharges, charges, grandTotal,
+      driverLabel, companyName: APP.settings.companyName || "", comment,
+    },
+  };
+  APP.exports.push(exportRecord);
+
+  const includedIds = new Set(batch.included.map(r => r.id));
+  APP.records.forEach(r => {
+    if (includedIds.has(r.id)) { r.exportStatus = "Exported"; r.exportNo = exportNo; }
+  });
+  includedIds.forEach(id => APP.selected.delete(id));
+
+  saveExports();
+  saveRecords();
+  closeModal("modalExportPreview");
+  renderDispatchTable();
+  renderExportRegister();
+  renderDashboard();
+  showToast(`Export ${exportNo} created successfully. ${rows.length} records exported. Total amount: ${formatINR(totalAmount)}.`, "success");
+
+  viewExport(exportNo);
+}
+
+/* =========================================================
+   EXPORT REGISTER PAGE
+   ========================================================= */
+function setupExportRegisterPage() {
+  document.getElementById("selectAllExportsCheck").addEventListener("change", (e) => {
+    const list = [...APP.exports];
+    if (e.target.checked) list.forEach(exp => APP.selectedExports.add(exp.exportNo));
+    else APP.selectedExports.clear();
+    renderExportRegister();
+  });
+  document.getElementById("btnPrintSelectedExports").addEventListener("click", printSelectedExports);
+}
+
+function renderExportRegister() {
+  const tbody = document.getElementById("exportRegisterBody");
+  const empty = document.getElementById("exportsEmpty");
+  const list = [...APP.exports].sort((a, b) => b.exportNo - a.exportNo);
+
+  if (list.length === 0) {
+    tbody.innerHTML = "";
+    empty.hidden = false;
+    document.getElementById("exportRegisterTable").style.display = "none";
+    document.getElementById("exportSelectionBar").hidden = true;
+    return;
+  }
+  document.getElementById("exportRegisterTable").style.display = "";
+  document.getElementById("exportSelectionBar").hidden = false;
+  empty.hidden = true;
+
+  tbody.innerHTML = list.map(e => `
+    <tr>
+      <td class="col-check"><input type="checkbox" class="export-row-check" data-export="${e.exportNo}" ${APP.selectedExports.has(e.exportNo) ? "checked" : ""}></td>
+      <td class="editable-cell" data-field="exportNo" data-export="${e.exportNo}" title="Click to edit"><div class="cell-inner"><strong>${e.exportNo}</strong></div></td>
+      <td>${escapeHtml(formatDateDMY(e.exportDate))}</td>
+      <td>${e.srlFrom}</td>
+      <td>${e.srlTo}</td>
+      <td class="num-cell">${e.recordCount}</td>
+      <td class="num-cell">${formatINR(e.totalAmount)}</td>
+      <td>${escapeHtml(e.driver)}</td>
+      <td>${escapeHtml(e.transportMode)}</td>
+      <td class="editable-cell" data-field="voNo" data-export="${e.exportNo}" title="Click to edit"><div class="cell-inner">${e.voNo}</div></td>
+      <td><span class="badge badge-completed">${escapeHtml(e.status)}</span></td>
+      <td class="col-actions">
+        <div class="cell-actions">
+          <button class="btn btn-secondary btn-sm" data-view="${e.exportNo}">View</button>
+        </div>
+      </td>
+    </tr>`).join("");
+
+  tbody.querySelectorAll("[data-view]").forEach(btn => {
+    btn.addEventListener("click", () => viewExport(Number(btn.dataset.view)));
+  });
+  tbody.querySelectorAll(".export-row-check").forEach(chk => {
+    chk.addEventListener("change", (e) => {
+      const no = Number(chk.dataset.export);
+      if (e.target.checked) APP.selectedExports.add(no); else APP.selectedExports.delete(no);
+      updateExportSelectionInfo();
+    });
+  });
+  tbody.querySelectorAll("td.editable-cell").forEach(td => {
+    td.addEventListener("click", () => {
+      if (td.querySelector(".cell-edit-input")) return;
+      const exp = APP.exports.find(x => x.exportNo === Number(td.dataset.export));
+      if (exp) startExportCellEdit(td, exp, td.dataset.field);
+    });
+  });
+
+  updateExportSelectionInfo();
+}
+
+function updateExportSelectionInfo() {
+  const count = APP.selectedExports.size;
+  document.getElementById("exportSelectionInfo").textContent = count > 0 ? `${count} selected` : "";
+  document.getElementById("btnPrintSelectedExports").disabled = count === 0;
+  const allChecked = APP.exports.length > 0 && count === APP.exports.length;
+  const selectAll = document.getElementById("selectAllExportsCheck");
+  if (selectAll) selectAll.checked = allChecked;
+}
+
+function startExportCellEdit(td, exp, field) {
+  const isExportNo = field === "exportNo";
+  const label = isExportNo ? "Export No." : "VO.NO.";
+  td.innerHTML = `<input type="number" min="1" class="cell-edit-input" value="${exp[field]}">`;
+  const input = td.querySelector(".cell-edit-input");
+  input.focus();
+  input.select();
+
+  let committed = false;
+  function commit() {
+    if (committed) return;
+    committed = true;
+    const newVal = toNum(input.value);
+    if (!newVal || newVal <= 0) {
+      showToast(`Please enter a valid ${label}`, "error");
+      renderExportRegister();
+      return;
+    }
+    if (newVal !== exp[field] && APP.exports.some(x => x[field] === newVal)) {
+      showToast(`${label} ${newVal} is already used by another export.`, "error");
+      renderExportRegister();
+      return;
+    }
+    const oldVal = exp[field];
+    exp[field] = newVal;
+    if (exp.reportData) exp.reportData[field] = newVal;
+    if (isExportNo) {
+      APP.records.forEach(r => { if (r.exportNo === oldVal) r.exportNo = newVal; });
+      if (APP.selectedExports.has(oldVal)) { APP.selectedExports.delete(oldVal); APP.selectedExports.add(newVal); }
+      saveRecords();
+    }
+    saveExports();
+    renderExportRegister();
+    showToast(`${label} updated to ${newVal}.`, "success");
+  }
+
+  input.addEventListener("blur", commit);
+  input.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") { e.preventDefault(); commit(); }
+    else if (e.key === "Escape") { e.preventDefault(); committed = true; renderExportRegister(); }
+  });
+}
+
+function viewExport(exportNo) {
+  const record = APP.exports.find(e => e.exportNo === exportNo);
+  if (!record) return;
+  APP.viewingExportNo = exportNo;
+  document.getElementById("modalReportTitle").textContent = `Sales Expenses Report — Export ${exportNo}`;
+  document.getElementById("reportPrintArea").innerHTML = buildReportHTML(record.reportData);
+  document.getElementById("reportCommentInput").value = record.reportData.comment || "";
+  document.getElementById("reportCommentBox").hidden = false;
+  openModal("modalReport");
+}
+
+function saveReportComment() {
+  if (!APP.viewingExportNo) return;
+  const exp = APP.exports.find(e => e.exportNo === APP.viewingExportNo);
+  if (!exp) return;
+  exp.reportData.comment = document.getElementById("reportCommentInput").value.trim();
+  saveExports();
+  document.getElementById("reportPrintArea").innerHTML = buildReportHTML(exp.reportData);
+  showToast("Comment saved.", "success");
+}
+
+function printSelectedExports() {
+  const selected = APP.exports
+    .filter(e => APP.selectedExports.has(e.exportNo))
+    .sort((a, b) => a.exportNo - b.exportNo);
+  if (!selected.length) return;
+  APP.viewingExportNo = null;
+  document.getElementById("reportCommentBox").hidden = true;
+  document.getElementById("modalReportTitle").textContent = `Sales Expenses Report — ${selected.length} Exports Combined`;
+  document.getElementById("reportPrintArea").innerHTML = selected.map(e => buildReportHTML(e.reportData)).join("");
+  openModal("modalReport");
+}
+
+function invNoLines(invNo) {
+  if (!invNo) return "";
+  return invNo.split(",").map(s => escapeHtml(s.trim())).filter(Boolean).join("<br>");
+}
+
+function buildReportHTML(d) {
+  const mark = (row, field, html) => (row.editedFields || []).includes(field)
+    ? `<span class="edited-mark" title="Corrected after this report was generated">${html}</span>`
+    : html;
+
+  // When several consecutive rows share the same non-empty Bulty No (e.g. many
+  // small school bundles consolidated into one Railways bilty), merge the
+  // Transport / Bulty No / Amount cells into one and show the combined amount.
+  const groupStartAt = {};
+  const groupSkip = new Set();
+  for (let i = 0; i < d.rows.length;) {
+    const key = (d.rows[i].bultyNo || "").trim();
+    let j = i + 1;
+    if (key) while (j < d.rows.length && (d.rows[j].bultyNo || "").trim() === key) j++;
+    const span = j - i;
+    if (span > 1) {
+      groupStartAt[i] = { span, groupAmount: toNum(d.rows[i].amount) };
+      for (let k = i + 1; k < j; k++) groupSkip.add(k);
+    }
+    i = j;
+  }
+
+  const rowsHTML = d.rows.map((r, idx) => {
+    const rowCommon = `
+      <td class="center">${r.seNo}</td>
+      <td class="center">${mark(r, "dateBooking", escapeHtml(formatDateDots(r.dateBooking)))}</td>
+      <td>${mark(r, "party", escapeHtml(r.party))}</td>
+      <td>${mark(r, "area", escapeHtml(r.area))}</td>
+      <td>${mark(r, "invNo", invNoLines(r.invNo))}</td>
+      <td class="center">${mark(r, "bundles", formatNumber(r.bundles))}</td>`;
+
+    if (groupSkip.has(idx)) return `<tr>${rowCommon}</tr>`;
+
+    const g = groupStartAt[idx];
+    if (g) {
+      return `<tr>${rowCommon}
+      <td rowspan="${g.span}">${mark(r, "transport", escapeHtml(r.transport))}</td>
+      <td class="center" rowspan="${g.span}">${mark(r, "bultyNo", escapeHtml(r.bultyNo))}</td>
+      <td class="num" rowspan="${g.span}">${formatINR(g.groupAmount).replace("₹", "")}</td>
+    </tr>`;
+    }
+    return `<tr>${rowCommon}
+      <td>${mark(r, "transport", escapeHtml(r.transport))}</td>
+      <td class="center">${mark(r, "bultyNo", escapeHtml(r.bultyNo))}</td>
+      <td class="num">${mark(r, "amount", formatINR(r.amount).replace("₹", ""))}</td>
+    </tr>`;
+  }).join("");
+
+  const hasEdits = d.rows.some(r => (r.editedFields || []).length > 0) || (d.charges || []).some(c => c.edited) || !!d.parChargesEdited;
+  const driverEdited = d.rows.some(r => (r.editedFields || []).includes("driver"));
+
+  return `
+  <div class="report-sheet">
+    <table class="report-table">
+      ${d.companyName ? `<tr><td colspan="9" class="report-company">${escapeHtml(d.companyName)}</td></tr>` : ""}
+      <tr class="report-title-row">
+        <td class="report-exno">${d.exportNo}</td>
+        <td colspan="6" class="report-title">SALES EXPENSES Date ${escapeHtml(formatDateDots(d.exportDate))}</td>
+        <td class="report-vo-label">VO.NO.</td>
+        <td class="report-vo-value">${d.voNo}</td>
+      </tr>
+      <tr class="report-col-head">
+        <th>SE. NO</th>
+        <th>DATE</th>
+        <th>PARTY / SCHOOL NAME</th>
+        <th>AREA</th>
+        <th>INV. NO.</th>
+        <th>NO OF<br>BUNDLES</th>
+        <th>TRANSPORT</th>
+        <th>BULTY NO</th>
+        <th>AMOUNT</th>
+      </tr>
+      ${rowsHTML}
+      <tr class="report-totals-row">
+        <td></td><td></td><td></td><td></td>
+        <td class="right">TOTAL</td>
+        <td class="center">${formatNumber(d.totalBundles)}</td>
+        <td></td>
+        <td class="right">TOTAL</td>
+        <td class="num">${formatINR(d.totalAmount).replace("₹", "")}</td>
+      </tr>
+      ${(d.charges && d.charges.length) ? d.charges.map((c, i) => `
+      <tr>
+        <td colspan="7">${escapeHtml(c.description !== undefined ? c.description : (i === 0 ? "Local transport booking cost from publication." : ""))}</td>
+        <td class="right">${c.formula ? escapeHtml(c.formula) : escapeHtml((c.label || "PAR.CHg").toUpperCase())}</td>
+        <td class="num">${c.edited ? `<span class="edited-mark" title="Corrected after this report was generated">${formatINR(c.amount).replace("₹", "")}</span>` : formatINR(c.amount).replace("₹", "")}</td>
+      </tr>`).join("") : `
+      <tr>
+        <td colspan="7">Local transport booking cost from publication.</td>
+        <td class="right">PAR.CHg</td>
+        <td class="num">${d.parChargesEdited ? `<span class="edited-mark" title="Corrected after this report was generated">${formatINR(d.parCharges || 0).replace("₹", "")}</span>` : formatINR(d.parCharges || 0).replace("₹", "")}</td>
+      </tr>`}
+      <tr>
+        <td colspan="7">In words:- ${numberToWordsIndian(d.grandTotal)}</td>
+        <td class="right">TOTAL AMT.</td>
+        <td class="num">${formatINR(d.grandTotal).replace("₹", "")}</td>
+      </tr>
+      <tr>
+        <td colspan="9" class="report-driver-row">Driver:- ${driverEdited ? `<span class="edited-mark" title="Corrected after this report was generated">${escapeHtml(d.driverLabel)}</span>` : escapeHtml(d.driverLabel)}</td>
+      </tr>
+      ${d.comment ? `<tr><td colspan="9" class="report-comment-row">Remarks:- ${escapeHtml(d.comment)}</td></tr>` : ""}
+    </table>
+    ${hasEdits ? `<div class="report-edit-footnote">Highlighted values were corrected in Dispatch Records after this report was first generated.</div>` : ""}
+  </div>`;
+}
+
+/* =========================================================
+   TRANSPORT EXPENSES PAGE
+   ========================================================= */
+function setupExpensePage() {
+  document.getElementById("btnAddExpense").addEventListener("click", addExpenseRow);
+}
+
+function renderExpenseTable() {
+  const tbody = document.getElementById("expenseBody");
+  const empty = document.getElementById("expenseEmpty");
+  if (APP.expenses.length === 0) {
+    tbody.innerHTML = "";
+    empty.hidden = false;
+    document.getElementById("expenseTable").style.display = "none";
+  } else {
+    document.getElementById("expenseTable").style.display = "";
+    empty.hidden = true;
+    tbody.innerHTML = APP.expenses.map(expenseRowHTML).join("");
+  }
+  bindExpenseRowEvents();
+  renderExpenseSummary();
+}
+
+function expenseRowHTML(e) {
+  const total = toNum(e.bulty) * toNum(e.rate);
+  return `
+  <tr data-id="${e.id}">
+    <td><input type="date" class="exp-date" value="${escapeHtml(e.date || "")}"></td>
+    <td>
+      <select class="exp-mode">
+        ${TRANSPORT_MODES.map(m => `<option value="${escapeHtml(m)}" ${m === e.mode ? "selected" : ""}>${escapeHtml(m)}</option>`).join("")}
+      </select>
+    </td>
+    <td><input type="text" class="exp-driver" list="driverListOptions" value="${escapeHtml(e.driver || "")}"></td>
+    <td><input type="number" class="exp-bulty" min="0" step="1" value="${e.bulty ?? 0}"></td>
+    <td><input type="number" class="exp-rate" min="0" step="0.01" value="${e.rate ?? 0}"></td>
+    <td class="num-cell exp-total">${formatINR(total)}</td>
+    <td><input type="text" class="exp-remark" value="${escapeHtml(e.remark || "")}"></td>
+    <td class="col-actions">
+      <div class="cell-actions">
+        <button class="icon-btn btn-sm" data-action="delete-expense" title="Delete row">
+          <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+        </button>
+      </div>
+    </td>
+  </tr>`;
+}
+
+function bindExpenseRowEvents() {
+  document.querySelectorAll("#expenseBody tr").forEach(tr => {
+    const id = tr.dataset.id;
+    const expense = APP.expenses.find(x => x.id === id);
+    const commit = () => {
+      expense.date = tr.querySelector(".exp-date").value;
+      expense.mode = tr.querySelector(".exp-mode").value;
+      expense.driver = tr.querySelector(".exp-driver").value;
+
+      const bultyVal = tr.querySelector(".exp-bulty").value;
+      const rateVal = tr.querySelector(".exp-rate").value;
+      if (!isValidNumber(bultyVal) || !isValidNumber(rateVal)) {
+        showToast("Please enter a valid number.", "error");
+        return;
+      }
+      expense.bulty = toNum(bultyVal);
+      expense.rate = toNum(rateVal);
+      expense.remark = tr.querySelector(".exp-remark").value;
+
+      const total = expense.bulty * expense.rate;
+      tr.querySelector(".exp-total").textContent = formatINR(total);
+      saveExpenses();
+      renderExpenseSummary();
+    };
+    tr.querySelectorAll("input, select").forEach(el => {
+      el.addEventListener("change", commit);
+      if (el.classList.contains("exp-bulty") || el.classList.contains("exp-rate")) {
+        el.addEventListener("input", () => {
+          const b = toNum(tr.querySelector(".exp-bulty").value);
+          const rt = toNum(tr.querySelector(".exp-rate").value);
+          tr.querySelector(".exp-total").textContent = formatINR(b * rt);
+        });
+      }
+    });
+    tr.querySelector('[data-action="delete-expense"]').addEventListener("click", () => {
+      APP.pendingDeleteFn = () => {
+        APP.expenses = APP.expenses.filter(x => x.id !== id);
+        saveExpenses();
+        renderExpenseTable();
+        showToast("Expense removed.", "success");
+      };
+      document.getElementById("modalDeleteText").textContent = "This transport expense entry will be removed.";
+      openModal("modalDelete");
+    });
+  });
+}
+
+function addExpenseRow() {
+  APP.expenses.push({
+    id: uid("exp"), date: todayISO(), mode: APP.settings.defaultMode || TRANSPORT_MODES[0],
+    driver: "", bulty: 0, rate: 0, remark: "",
+  });
+  saveExpenses();
+  renderExpenseTable();
+  showToast("Expense row added.", "success");
+}
+
+function renderExpenseSummary() {
+  const totalBulty = APP.expenses.reduce((s, e) => s + toNum(e.bulty), 0);
+  const totalCost = APP.expenses.reduce((s, e) => s + toNum(e.bulty) * toNum(e.rate), 0);
+  document.getElementById("expSumBulty").textContent = formatNumber(totalBulty);
+  document.getElementById("expSumTotal").textContent = formatINR(totalCost);
+}
+
+/* =========================================================
+   MASTERS PAGE — Drivers & Transporters
+   ========================================================= */
+function setupMastersPage() {
+  document.querySelectorAll("#masterTabs .tab").forEach(tab => {
+    tab.addEventListener("click", () => {
+      document.querySelectorAll("#masterTabs .tab").forEach(t => t.classList.remove("is-active"));
+      tab.classList.add("is-active");
+      document.querySelectorAll(".tab-panel").forEach(p => p.classList.remove("is-active"));
+      document.getElementById("tab-" + tab.dataset.tab).classList.add("is-active");
+    });
+  });
+
+  document.getElementById("btnAddDriver").addEventListener("click", () => openDriverModal(null));
+  document.getElementById("btnSaveDriver").addEventListener("click", saveDriverFromModal);
+  document.getElementById("btnAddTransporter").addEventListener("click", () => openTransporterModal(null));
+  document.getElementById("btnSaveTransporter").addEventListener("click", saveTransporterFromModal);
+  document.getElementById("btnAddArea").addEventListener("click", () => openAreaModal(null));
+  document.getElementById("btnSaveArea").addEventListener("click", saveAreaFromModal);
+}
+
+function renderDriverTable() {
+  const tbody = document.getElementById("driverBody");
+  tbody.innerHTML = APP.drivers.map(d => `
+    <tr>
+      <td>${escapeHtml(d.name)}</td>
+      <td>${escapeHtml(d.type)}</td>
+      <td>${escapeHtml(d.phone || "—")}</td>
+      <td>${d.status === "Active" ? '<span class="badge badge-exported">Active</span>' : '<span class="badge badge-pending">Inactive</span>'}</td>
+      <td class="col-actions">
+        <div class="cell-actions">
+          <button class="icon-btn btn-sm" data-edit="${d.id}" title="Edit">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
+          <button class="icon-btn btn-sm" data-del="${d.id}" title="Delete">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          </button>
+        </div>
+      </td>
+    </tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:var(--ink-500);padding:20px;">No drivers yet.</td></tr>`;
+
+  tbody.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => openDriverModal(b.dataset.edit)));
+  tbody.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => {
+    APP.pendingDeleteFn = () => {
+      APP.drivers = APP.drivers.filter(d => d.id !== b.dataset.del);
+      saveDrivers();
+      renderDriverTable();
+      renderMasterOptions();
+      showToast("Driver removed.", "success");
+    };
+    document.getElementById("modalDeleteText").textContent = "This driver will be removed from the master list.";
+    openModal("modalDelete");
+  }));
+}
+
+function openDriverModal(id) {
+  APP.editingDriverId = id;
+  const d = id ? APP.drivers.find(x => x.id === id) : null;
+  document.getElementById("modalDriverTitle").textContent = d ? "Edit Driver" : "Add Driver";
+  document.getElementById("drvName").value = d ? d.name : "";
+  document.getElementById("drvType").value = d ? d.type : "Company Vehicle";
+  document.getElementById("drvPhone").value = d ? d.phone || "" : "";
+  document.getElementById("drvStatus").value = d ? d.status : "Active";
+  openModal("modalDriver");
+}
+
+function saveDriverFromModal() {
+  const name = document.getElementById("drvName").value.trim();
+  if (!name) { showToast("Driver name is required.", "error"); return; }
+  const data = {
+    name, type: document.getElementById("drvType").value,
+    phone: document.getElementById("drvPhone").value.trim(),
+    status: document.getElementById("drvStatus").value,
+  };
+  if (APP.editingDriverId) {
+    Object.assign(APP.drivers.find(d => d.id === APP.editingDriverId), data);
+    showToast("Driver updated.", "success");
+  } else {
+    APP.drivers.push({ id: uid("drv"), ...data });
+    showToast("Driver added.", "success");
+  }
+  saveDrivers();
+  renderDriverTable();
+  renderMasterOptions();
+  closeModal("modalDriver");
+}
+
+function renderTransporterTable() {
+  const tbody = document.getElementById("transporterBody");
+  tbody.innerHTML = APP.transporters.map(t => `
+    <tr>
+      <td>${escapeHtml(t.name)}</td>
+      <td>${escapeHtml(t.mode)}</td>
+      <td>${escapeHtml(t.contact || "—")}</td>
+      <td>${t.status === "Active" ? '<span class="badge badge-exported">Active</span>' : '<span class="badge badge-pending">Inactive</span>'}</td>
+      <td class="col-actions">
+        <div class="cell-actions">
+          <button class="icon-btn btn-sm" data-edit="${t.id}" title="Edit">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
+          <button class="icon-btn btn-sm" data-del="${t.id}" title="Delete">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          </button>
+        </div>
+      </td>
+    </tr>`).join("") || `<tr><td colspan="5" style="text-align:center;color:var(--ink-500);padding:20px;">No transporters yet.</td></tr>`;
+
+  tbody.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => openTransporterModal(b.dataset.edit)));
+  tbody.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => {
+    APP.pendingDeleteFn = () => {
+      APP.transporters = APP.transporters.filter(t => t.id !== b.dataset.del);
+      saveTransporters();
+      renderTransporterTable();
+      renderMasterOptions();
+      showToast("Transporter removed.", "success");
+    };
+    document.getElementById("modalDeleteText").textContent = "This transporter will be removed from the master list.";
+    openModal("modalDelete");
+  }));
+}
+
+function openTransporterModal(id) {
+  APP.editingTransporterId = id;
+  const t = id ? APP.transporters.find(x => x.id === id) : null;
+  document.getElementById("modalTransporterTitle").textContent = t ? "Edit Transporter" : "Add Transporter";
+  document.getElementById("trnName").value = t ? t.name : "";
+  document.getElementById("trnMode").value = t ? t.mode : TRANSPORT_MODES[0];
+  document.getElementById("trnContact").value = t ? t.contact || "" : "";
+  document.getElementById("trnStatus").value = t ? t.status : "Active";
+  openModal("modalTransporter");
+}
+
+function saveTransporterFromModal() {
+  const name = document.getElementById("trnName").value.trim();
+  if (!name) { showToast("Transporter name is required.", "error"); return; }
+  const data = {
+    name, mode: document.getElementById("trnMode").value,
+    contact: document.getElementById("trnContact").value.trim(),
+    status: document.getElementById("trnStatus").value,
+  };
+  if (APP.editingTransporterId) {
+    Object.assign(APP.transporters.find(t => t.id === APP.editingTransporterId), data);
+    showToast("Transporter updated.", "success");
+  } else {
+    APP.transporters.push({ id: uid("trn"), ...data });
+    showToast("Transporter added.", "success");
+  }
+  saveTransporters();
+  renderTransporterTable();
+  renderMasterOptions();
+  closeModal("modalTransporter");
+}
+
+function renderAreaTable() {
+  const tbody = document.getElementById("areaBody");
+  tbody.innerHTML = APP.areas.map(a => `
+    <tr>
+      <td>${escapeHtml(a.name)}</td>
+      <td>${a.status === "Active" ? '<span class="badge badge-exported">Active</span>' : '<span class="badge badge-pending">Inactive</span>'}</td>
+      <td class="col-actions">
+        <div class="cell-actions">
+          <button class="icon-btn btn-sm" data-edit="${a.id}" title="Edit">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+          </button>
+          <button class="icon-btn btn-sm" data-del="${a.id}" title="Delete">
+            <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
+          </button>
+        </div>
+      </td>
+    </tr>`).join("") || `<tr><td colspan="3" style="text-align:center;color:var(--ink-500);padding:20px;">No areas yet.</td></tr>`;
+
+  tbody.querySelectorAll("[data-edit]").forEach(b => b.addEventListener("click", () => openAreaModal(b.dataset.edit)));
+  tbody.querySelectorAll("[data-del]").forEach(b => b.addEventListener("click", () => {
+    APP.pendingDeleteFn = () => {
+      APP.areas = APP.areas.filter(a => a.id !== b.dataset.del);
+      saveAreas();
+      renderAreaTable();
+      renderMasterOptions();
+      showToast("Area removed.", "success");
+    };
+    document.getElementById("modalDeleteText").textContent = "This area will be removed from the master list. Records that already use it are not affected.";
+    openModal("modalDelete");
+  }));
+}
+
+function openAreaModal(id) {
+  APP.editingAreaId = id;
+  const a = id ? APP.areas.find(x => x.id === id) : null;
+  document.getElementById("modalAreaTitle").textContent = a ? "Edit Area" : "Add Area";
+  document.getElementById("areaName").value = a ? a.name : "";
+  document.getElementById("areaStatus").value = a ? a.status : "Active";
+  openModal("modalArea");
+}
+
+function saveAreaFromModal() {
+  const name = document.getElementById("areaName").value.trim().toUpperCase();
+  if (!name) { showToast("Area name is required.", "error"); return; }
+  const dupe = APP.areas.find(a => a.name.toUpperCase() === name && a.id !== APP.editingAreaId);
+  if (dupe) { showToast(`"${name}" already exists in the areas list.`, "error"); return; }
+
+  const data = { name, status: document.getElementById("areaStatus").value };
+  if (APP.editingAreaId) {
+    Object.assign(APP.areas.find(a => a.id === APP.editingAreaId), data);
+    showToast("Area updated.", "success");
+  } else {
+    APP.areas.push({ id: uid("area"), ...data });
+    showToast("Area added.", "success");
+  }
+  saveAreas();
+  renderAreaTable();
+  renderMasterOptions();
+  closeModal("modalArea");
+}
+
+/* =========================================================
+   SETTINGS PAGE
+   ========================================================= */
+function setupSettingsPage() {
+  document.getElementById("btnSaveSettings").addEventListener("click", saveSettingsFromForm);
+  document.getElementById("btnClearDemo").addEventListener("click", () => {
+    APP.pendingDeleteFn = clearDemoData;
+    document.getElementById("modalDeleteText").textContent = "This will remove the sample dispatch records that came pre-loaded with the app. Your own entries will not be affected.";
+    document.getElementById("modalDeleteTitle").textContent = "Clear Demo Data?";
+    openModal("modalDelete");
+  });
+  document.getElementById("btnResetApp").addEventListener("click", () => openModal("modalReset"));
+  document.getElementById("btnConfirmReset").addEventListener("click", resetApplication);
+}
+
+function loadSettingsForm() {
+  document.getElementById("setCompanyName").value = APP.settings.companyName || "";
+  document.getElementById("setStartExportNo").value = APP.settings.startExportNo;
+  document.getElementById("setStartVoNo").value = APP.settings.startVoNo;
+  document.getElementById("setExportLimit").value = APP.settings.exportLimit;
+  document.getElementById("setDefaultDriver").value = APP.settings.defaultDriver || "";
+  document.getElementById("setDefaultMode").value = APP.settings.defaultMode || TRANSPORT_MODES[0];
+}
+
+function saveSettingsFromForm() {
+  const startExportNo = document.getElementById("setStartExportNo").value;
+  const startVoNo = document.getElementById("setStartVoNo").value;
+  const exportLimit = document.getElementById("setExportLimit").value;
+  if (!isValidNumber(startExportNo) || !isValidNumber(startVoNo) || !isValidNumber(exportLimit)) {
+    showToast("Please enter valid numbers for the settings fields.", "error");
+    return;
+  }
+  APP.settings.companyName = document.getElementById("setCompanyName").value.trim();
+  APP.settings.startExportNo = toNum(startExportNo) || 577;
+  APP.settings.startVoNo = toNum(startVoNo) || 587;
+  APP.settings.exportLimit = toNum(exportLimit) || 10000;
+  APP.settings.defaultDriver = document.getElementById("setDefaultDriver").value;
+  APP.settings.defaultMode = document.getElementById("setDefaultMode").value;
+  saveSettings();
+  document.getElementById("topbarTitleText").textContent = "NAVBODH BOOK TRANSPORT & DISPATCH MANAGEMENT";
+  showToast("Settings saved.", "success");
+}
+
+function clearDemoData() {
+  const seedParties = new Set(SEED_DISPATCH_RECORDS.map(r => r.party));
+  APP.records = APP.records.filter(r => !(seedParties.has(r.party) && !r.exportNo));
+  saveRecords();
+  renderDispatchTable();
+  renderDashboard();
+  renderMasterOptions();
+  showToast("Demo data cleared.", "success");
+}
+
+function resetApplication() {
+  Object.values(STORE_KEYS).forEach(k => localStorage.removeItem(k));
+  closeModal("modalReset");
+  location.reload();
+}
+
+/* =========================================================
+   EXCEL IMPORT
+   Supports two source formats, auto-detected per sheet:
+   1) A flat table with one header row (our own export format, or any
+      spreadsheet using recognizable column names).
+   2) Stacked "SALES EXPENSES" ledger blocks (the original handwritten/
+      Google Sheets report format) — one or many blocks per sheet,
+      each with its own mini header row and totals/footer lines.
+   All sheets in the workbook are scanned, not just the first.
+   ========================================================= */
+const IMPORT_COLUMN_MAP = [
+  { key: "srlNo", labels: ["srl no", "srlno", "sr no", "sl no", "se. no", "se no"] },
+  { key: "dateBooking", labels: ["date of booking", "booking date", "bundle booking date"] },
+  { key: "dateEntry", labels: ["date of entry", "date of entry (vikry/pete)", "entry date", "expenses date"] },
+  { key: "party", labels: ["party / school name", "party/school name", "party", "school name"] },
+  { key: "area", labels: ["area", "location"] },
+  { key: "invNo", labels: ["inv no", "inv. no.", "invoice no", "inv.no."] },
+  { key: "bundles", labels: ["no of bundles", "bundles", "no of bdl"] },
+  { key: "transport", labels: ["transport", "bus", "local transport"] },
+  { key: "bultyNo", labels: ["bulty no", "bilty no"] },
+  { key: "amount", labels: ["amount"] },
+  { key: "voucherSrlNo", labels: ["voucher srl number", "voucher srl no"] },
+  { key: "voucherNo", labels: ["voucher no", "vo.no.", "vo no"] },
+  { key: "driver", labels: ["driver"] },
+];
+
+function normHeaderLabel(v) {
+  return String(v == null ? "" : v).replace(/[\r\n]+/g, " ").replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function buildColumnIndex(row) {
+  const norm = (row || []).map(normHeaderLabel);
+  const colIndex = {};
+  IMPORT_COLUMN_MAP.forEach(col => {
+    const idx = norm.findIndex(h => col.labels.includes(h));
+    if (idx !== -1) colIndex[col.key] = idx;
+  });
+  return colIndex;
+}
+
+// Finds a dd.mm.yyyy / dd/mm/yyyy / dd-mm-yyyy date anywhere in a string.
+// If several appear (e.g. a date range), the last one is used.
+function normalizeImportedDate(val) {
+  if (!val) return "";
+  const s = String(val).trim();
+  let m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+  if (m) return `${m[1]}-${m[2].padStart(2, "0")}-${m[3].padStart(2, "0")}`;
+  const matches = [...s.matchAll(/(\d{1,2})[.\/\-](\d{1,2})[.\/\-](\d{4})/g)];
+  if (!matches.length) return "";
+  const last = matches[matches.length - 1];
+  return `${last[3]}-${last[2].padStart(2, "0")}-${last[1].padStart(2, "0")}`;
+}
+
+// Import sources often format numbers as "₹150.00" or "1,200" — strip that before parsing.
+function toNumImport(val) {
+  if (val === null || val === undefined) return 0;
+  const cleaned = String(val).replace(/[₹,\s]/g, "");
+  const n = parseFloat(cleaned);
+  return isNaN(n) ? 0 : n;
+}
+function isValidImportNumber(val) {
+  if (val === null || val === undefined || String(val).trim() === "") return false;
+  const cleaned = String(val).replace(/[₹,\s]/g, "");
+  return cleaned !== "" && !isNaN(parseFloat(cleaned)) && isFinite(cleaned);
+}
+
+function recordFromRow(colIndex, row, fallbackVoNo, fallbackBookingDate) {
+  const get = (key) => colIndex[key] !== undefined ? row[colIndex[key]] : "";
+  return {
+    dateBooking: normalizeImportedDate(get("dateBooking")) || fallbackBookingDate || "",
+    dateEntry: normalizeImportedDate(get("dateEntry")),
+    party: String(get("party") || "").trim(),
+    area: String(get("area") || "").trim(),
+    invNo: String(get("invNo") || "").replace(/[\r\n]+/g, ", ").trim(),
+    bundles: toNumImport(get("bundles")),
+    transport: String(get("transport") || "").trim(),
+    bultyNo: String(get("bultyNo") || "").trim(),
+    amount: toNumImport(get("amount")),
+    voucherSrlNo: String(get("voucherSrlNo") || "").trim(),
+    voucherNo: String(get("voucherNo") || fallbackVoNo || "").trim(),
+    driver: String(get("driver") || "").replace(/\([^)]*\)/g, "").replace(/^driver\s*-?\s*/i, "").trim(),
+  };
+}
+
+// Mode 1: a single header row followed by data rows.
+function parseFlatTable(matrix) {
+  const colIndex = buildColumnIndex(matrix[0]);
+  if (colIndex.party === undefined) return [];
+  const dataRows = matrix.slice(1).filter(r => r.some(c => String(c || "").trim() !== ""));
+  return dataRows.map(row => recordFromRow(colIndex, row)).filter(r => r.party && r.amount > 0);
+}
+
+// A footer/total/note line inside a ledger block — never a real record.
+const LEDGER_SKIP_LINE = /booking\s*charges|publication|in\s*words|par\.?chg|^\s*total|^\s*driver/i;
+
+// Mode 2: one or more "SALES EXPENSES ... / BUNDLE BOOKING ... / [mini header] / rows..." blocks.
+function parseLedgerBlocks(matrix) {
+  const out = [];
+  let colIndex = null;
+  let blockVoNo = "";
+  let blockBookingDate = "";
+
+  for (let i = 0; i < matrix.length; i++) {
+    const row = matrix[i] || [];
+    const rowText = row.map(c => (c === null || c === undefined) ? "" : String(c)).join(" ");
+
+    if (/sales\s*expenses/i.test(rowText)) {
+      colIndex = null;
+      const voIdx = row.findIndex(c => normHeaderLabel(c) === "vo.no.");
+      blockVoNo = voIdx !== -1 && row[voIdx + 1] != null ? String(row[voIdx + 1]).trim() : "";
+      continue;
+    }
+
+    const candidate = buildColumnIndex(row);
+    if (candidate.party !== undefined && candidate.amount !== undefined) {
+      colIndex = candidate;
+      continue;
+    }
+
+    if (/bundle\s*booking/i.test(rowText)) {
+      blockBookingDate = normalizeImportedDate(rowText);
+      continue;
+    }
+
+    if (!colIndex) continue;
+
+    const partyRaw = colIndex.party !== undefined ? row[colIndex.party] : "";
+    const partyVal = partyRaw == null ? "" : String(partyRaw).trim();
+    if (!partyVal || LEDGER_SKIP_LINE.test(partyVal)) continue;
+
+    const amountRaw = colIndex.amount !== undefined ? row[colIndex.amount] : "";
+    if (amountRaw === undefined || amountRaw === null || String(amountRaw).trim() === "" || !isValidImportNumber(amountRaw)) continue;
+
+    out.push(recordFromRow(colIndex, row, blockVoNo, blockBookingDate));
+  }
+  return out;
+}
+
+function parseMatrixForRecords(matrix) {
+  if (!matrix || !matrix.length) return [];
+  const looksFlat = buildColumnIndex(matrix[0]).party !== undefined;
+  return looksFlat ? parseFlatTable(matrix) : parseLedgerBlocks(matrix);
+}
+
+function handleImportFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+
+  const isCSV = /\.csv$/i.test(file.name);
+  const reader = new FileReader();
+
+  reader.onload = function (evt) {
+    let allRows = [];
+    try {
+      if (!isCSV && typeof XLSX !== "undefined") {
+        const wb = XLSX.read(evt.target.result, { type: "array" });
+        wb.SheetNames.forEach(name => {
+          const matrix = XLSX.utils.sheet_to_json(wb.Sheets[name], { header: 1, raw: false, defval: "" });
+          allRows = allRows.concat(parseMatrixForRecords(matrix));
+        });
+      } else {
+        const text = typeof evt.target.result === "string" ? evt.target.result : new TextDecoder().decode(evt.target.result);
+        allRows = parseMatrixForRecords(parseCSV(text));
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("Could not read this file. Please check the format and try again.", "error");
+      return;
+    }
+
+    if (!allRows.length) {
+      showToast("No recognizable dispatch records were found in this file.", "error");
+      return;
+    }
+
+    let nextSrl = APP.records.reduce((m, r) => Math.max(m, toNum(r.srlNo)), 0) + 1;
+    const parsed = allRows.map(r => ({ srlNo: nextSrl++, ...r }));
+
+    APP.pendingImportRows = parsed;
+    renderImportPreview(parsed);
+  };
+
+  if (isCSV) reader.readAsText(file);
+  else reader.readAsArrayBuffer(file);
+}
+
+function renderImportPreview(rows) {
+  const wrap = document.getElementById("importPreviewWrap");
+  wrap.hidden = false;
+  document.getElementById("importPreviewCount").textContent = `${rows.length} record(s) ready to import — showing first 10 below.`;
+  const table = document.getElementById("importPreviewTable");
+  const headers = ["SRL", "Date", "Party", "Area", "Bundles", "Transport", "Amount", "Driver"];
+  table.querySelector("thead").innerHTML = `<tr>${headers.map(h => `<th>${h}</th>`).join("")}</tr>`;
+  table.querySelector("tbody").innerHTML = rows.slice(0, 10).map(r => `
+    <tr>
+      <td>${r.srlNo}</td><td>${escapeHtml(formatDateDMY(r.dateBooking))}</td><td>${escapeHtml(r.party)}</td>
+      <td>${escapeHtml(r.area)}</td><td>${formatNumber(r.bundles)}</td><td>${escapeHtml(r.transport)}</td>
+      <td>${formatINR(r.amount)}</td><td>${escapeHtml(r.driver)}</td>
+    </tr>`).join("");
+  document.getElementById("btnConfirmImport").disabled = false;
+}
+
+function confirmImport() {
+  if (!APP.pendingImportRows || !APP.pendingImportRows.length) return;
+
+  const existing = getExistingInvoiceNumbers(null);
+  const accepted = [];
+  let skipped = 0;
+  APP.pendingImportRows.forEach(r => {
+    const tokens = (r.invNo || "").split(",").map(t => t.trim().toUpperCase()).filter(Boolean);
+    const isDupe = tokens.some(t => existing.has(t));
+    if (isDupe) { skipped++; return; }
+    tokens.forEach(t => existing.add(t));
+    accepted.push(r);
+  });
+
+  const newRecords = accepted.map(r => ({
+    id: uid("rec"), exportStatus: "Not Exported", exportNo: null, ...r,
+  }));
+  APP.records.push(...newRecords);
+  saveRecords();
+  renderMasterOptions();
+  renderDispatchTable();
+  renderDashboard();
+  closeModal("modalImport");
+  if (skipped > 0) {
+    showToast(`Imported ${newRecords.length} record(s). Skipped ${skipped} row(s) with invoice numbers that already exist.`, newRecords.length ? "warning" : "error");
+  } else {
+    showToast(`Excel imported successfully. ${newRecords.length} record(s) added.`, "success");
+  }
+  APP.pendingImportRows = null;
+}
+
+/* =========================================================
+   EXCEL EXPORT
+   ========================================================= */
+function exportExcel(scope) {
+  const rows = scope === "all" ? APP.records : getFilteredRecords();
+  if (!rows.length) { showToast("There are no records to export.", "error"); return; }
+
+  const data = rows.map(r => ({
+    "SRL NO": r.srlNo,
+    "DATE OF BOOKING": formatDateDMY(r.dateBooking),
+    "DATE OF ENTRY (VIKRY/PETE)": formatDateDMY(r.dateEntry),
+    "PARTY / SCHOOL NAME": r.party,
+    "AREA": r.area,
+    "INV. NO.": r.invNo,
+    "NO OF BUNDLES": r.bundles,
+    "TRANSPORT": r.transport,
+    "BULTY NO": r.bultyNo,
+    "AMOUNT": r.amount,
+    "VOUCHER SRL NUMBER": r.voucherSrlNo,
+    "VOUCHER NO": r.voucherNo,
+    "DRIVER": r.driver,
+    "EXPORT STATUS": r.exportStatus,
+    "RELOCATION LEG": r.isRelocation ? "Yes" : "No",
+  }));
+
+  const filename = `dispatch-records-${scope}-${todayISO()}.xlsx`;
+
+  if (typeof XLSX !== "undefined") {
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Dispatch Records");
+    XLSX.writeFile(wb, filename);
+  } else {
+    // CSV fallback
+    const headers = Object.keys(data[0]);
+    const csv = [headers.join(",")]
+      .concat(data.map(row => headers.map(h => `"${String(row[h] ?? "").replace(/"/g, '""')}"`).join(",")))
+      .join("\n");
+    const blob = new Blob([csv], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url; a.download = filename.replace(".xlsx", ".csv");
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+  showToast(`${rows.length} record(s) exported to Excel.`, "success");
+}
+
+/* =========================================================
+   CARGO ENTRY
+   One tab per cargo company (e.g. RADHASWAMI CARGO, PRAKASH CARGO).
+   Each cargo has its own entries and its own Sales Expenses report format.
+   ========================================================= */
+function loadCargoState() {
+  const storedCargos = Store.get(STORE_KEYS.cargos, null);
+  APP.cargos = Array.isArray(storedCargos) ? storedCargos : SEED_CARGOS.map(c => ({ ...c }));
+  APP.cargoEntries = Store.get(STORE_KEYS.cargoEntries, []);
+  APP.cargoReports = Store.get(STORE_KEYS.cargoReports, []);
+  APP.activeCargoId = APP.cargos.length ? APP.cargos[0].id : null;
+}
+function saveCargos() { Store.set(STORE_KEYS.cargos, APP.cargos); markSaving(); }
+function saveCargoEntries() { Store.set(STORE_KEYS.cargoEntries, APP.cargoEntries); markSaving(); }
+function saveCargoReports() { Store.set(STORE_KEYS.cargoReports, APP.cargoReports); markSaving(); }
+
+function getActiveCargo() { return APP.cargos.find(c => c.id === APP.activeCargoId) || null; }
+function cargoRowTotal(amount, marking) { return toNum(amount) + toNum(marking); }
+
+const CARGO_ICON_EDIT = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>`;
+const CARGO_ICON_DEL = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/><path d="M9 6V4a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2"/></svg>`;
+
+function renderCargoPage() {
+  const cargo = getActiveCargo();
+  document.getElementById("cargoTabs").innerHTML = APP.cargos.map(c => {
+    const n = APP.cargoEntries.filter(e => e.cargoId === c.id).length;
+    return `<button type="button" class="view-tab ${c.id === APP.activeCargoId ? "active" : ""}" data-cargo="${c.id}">${escapeHtml(c.name)} <span class="view-count">${n}</span></button>`;
+  }).join("") + `<button type="button" class="view-tab view-tab-add" id="btnAddCargo">+ Add Cargo</button>`;
+
+  document.getElementById("cargoNone").hidden = !!cargo;
+  document.getElementById("cargoWrap").hidden = !cargo;
+  if (!cargo) return;
+
+  const entries = APP.cargoEntries.filter(e => e.cargoId === cargo.id);
+  APP.cargoSelected.forEach(id => { if (!entries.some(e => e.id === id)) APP.cargoSelected.delete(id); });
+
+  // Header — columns follow this cargo's report format
+  const cols = ['<th class="col-check"><input type="checkbox" id="cargoSelectAll" title="Select all"></th>', "<th>SE. NO</th>", "<th>DATE OF BOOKING</th>", "<th>PARTY / SCHOOL NAME</th>", "<th>AREA</th>", "<th>INV. NO.</th>", "<th>NO OF BDL</th>", "<th>BILTY NO</th>", "<th>AMOUNT</th>"];
+  if (cargo.hasMarking) cols.push("<th>MARKING CHARGE</th>", "<th>TOTAL AMOUNT</th>");
+  cols.push("<th>REPORT STATUS</th>", '<th class="col-actions">ACTIONS</th>');
+  document.getElementById("cargoHead").innerHTML = `<tr>${cols.join("")}</tr>`;
+
+  document.getElementById("cargoRows").innerHTML = entries.map((e, i) => `
+    <tr data-id="${e.id}" class="${APP.cargoSelected.has(e.id) ? "is-selected" : ""} ${e.reportNo ? "is-exported" : ""}">
+      <td class="col-check"><input type="checkbox" class="cargo-check" ${APP.cargoSelected.has(e.id) ? "checked" : ""}></td>
+      <td class="row-index">${i + 1}</td>
+      <td>${escapeHtml(formatDateDMY(e.dateBooking))}</td>
+      <td>${escapeHtml(e.party)}</td>
+      <td>${escapeHtml(e.area)}</td>
+      <td>${cargoInvLines(e.invNo)}</td>
+      <td class="num-cell">${formatNumber(e.bundles)}</td>
+      <td>${escapeHtml(e.bultyNo)}</td>
+      <td class="num-cell">${formatINR(e.amount)}</td>
+      ${cargo.hasMarking ? `<td class="num-cell">${formatINR(e.markingCharge)}</td><td class="num-cell">${formatINR(cargoRowTotal(e.amount, e.markingCharge))}</td>` : ""}
+      <td>${e.reportNo ? `<span class="badge badge-exported">Report ${e.reportNo}</span>` : `<span class="badge badge-pending">Not Reported</span>`}</td>
+      <td class="col-actions"><div class="cell-actions">
+        <button class="icon-btn btn-sm" data-action="edit" title="Edit entry">${CARGO_ICON_EDIT}</button>
+        <button class="icon-btn btn-sm" data-action="delete" title="Delete entry">${CARGO_ICON_DEL}</button>
+      </div></td>
+    </tr>`).join("");
+  document.getElementById("cargoTable").style.display = entries.length ? "" : "none";
+  document.getElementById("cargoEmpty").hidden = entries.length > 0;
+
+  const selCount = entries.filter(e => APP.cargoSelected.has(e.id)).length;
+  document.getElementById("cargoSelectionInfo").textContent = selCount ? `${selCount} selected` : "";
+  const selAll = document.getElementById("cargoSelectAll");
+  if (selAll) selAll.checked = entries.length > 0 && selCount === entries.length;
+
+  document.getElementById("cargoSumEntries").textContent = formatNumber(entries.length);
+  document.getElementById("cargoSumBundles").textContent = formatNumber(entries.reduce((s, e) => s + toNum(e.bundles), 0));
+  document.getElementById("cargoSumAmount").textContent = formatINR(entries.reduce((s, e) => s + cargoRowTotal(e.amount, cargo.hasMarking ? e.markingCharge : 0), 0));
+
+  // Saved reports for this cargo
+  const reports = APP.cargoReports.filter(r => r.cargoId === cargo.id).sort((x, y) => y.no - x.no);
+  document.getElementById("cargoReportsBody").innerHTML = reports.map(r => `
+    <tr data-rid="${r.id}">
+      <td class="row-index">${r.no}</td>
+      <td>${escapeHtml(formatDateDMY(r.exportDate))}</td>
+      <td>${escapeHtml(r.bookingLabel || "")}</td>
+      <td class="num-cell">${r.rows.length}</td>
+      <td class="num-cell">${formatINR(r.grandTotal)}</td>
+      <td class="col-actions"><div class="cell-actions">
+        <button class="btn btn-secondary btn-sm" data-action="view">View / Print</button>
+        <button class="icon-btn btn-sm" data-action="delete-report" title="Delete report">${CARGO_ICON_DEL}</button>
+      </div></td>
+    </tr>`).join("");
+  document.getElementById("cargoReportsEmpty").hidden = reports.length > 0;
+}
+
+function cargoInvLines(v) {
+  if (!v) return "";
+  return String(v).split(/[\n,]+/).map(s => escapeHtml(s.trim())).filter(Boolean).join("<br>");
+}
+
+function setupCargoPage() {
+  // Tabs (incl. "+ Add Cargo")
+  document.getElementById("cargoTabs").addEventListener("click", (e) => {
+    if (e.target.closest("#btnAddCargo")) { openCargoModal(null); return; }
+    const tab = e.target.closest("[data-cargo]");
+    if (!tab) return;
+    APP.activeCargoId = tab.dataset.cargo;
+    APP.cargoSelected.clear();
+    renderCargoPage();
+  });
+
+  document.getElementById("btnAddCargoEntry").addEventListener("click", () => openCargoEntryModal(null));
+  document.getElementById("btnMakeCargoReport").addEventListener("click", openCargoReportModal);
+  document.getElementById("btnEditCargo").addEventListener("click", () => { if (APP.activeCargoId) openCargoModal(APP.activeCargoId); });
+  document.getElementById("btnDeleteCargo").addEventListener("click", deleteActiveCargo);
+  document.getElementById("btnSaveCargo").addEventListener("click", saveCargoFromModal);
+  document.getElementById("btnSaveCargoEntry").addEventListener("click", saveCargoEntryFromModal);
+  document.getElementById("btnConfirmCargoReport").addEventListener("click", confirmCargoReport);
+  ["ceAmount", "ceMarking"].forEach(id => document.getElementById(id).addEventListener("input", updateCargoEntryTotal));
+
+  // Entry table: select / edit / delete
+  const rows = document.getElementById("cargoRows");
+  rows.addEventListener("change", (e) => {
+    const cb = e.target.closest(".cargo-check");
+    if (!cb) return;
+    const id = cb.closest("tr").dataset.id;
+    if (cb.checked) APP.cargoSelected.add(id); else APP.cargoSelected.delete(id);
+    renderCargoPage();
+  });
+  rows.addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    const id = btn.closest("tr").dataset.id;
+    if (btn.dataset.action === "edit") openCargoEntryModal(id);
+    if (btn.dataset.action === "delete") {
+      const entry = APP.cargoEntries.find(x => x.id === id);
+      APP.pendingDeleteFn = () => {
+        APP.cargoEntries = APP.cargoEntries.filter(x => x.id !== id);
+        APP.cargoSelected.delete(id);
+        saveCargoEntries();
+        renderCargoPage();
+        showToast("Entry deleted.", "success");
+      };
+      document.getElementById("modalDeleteText").textContent = entry && entry.reportNo
+        ? `This entry is already in Report ${entry.reportNo}. Deleting it here will not change that saved report.`
+        : "This entry will be removed.";
+      openModal("modalDelete");
+    }
+  });
+  document.getElementById("cargoHead").addEventListener("change", (e) => {
+    if (e.target.id !== "cargoSelectAll") return;
+    APP.cargoEntries.filter(x => x.cargoId === APP.activeCargoId).forEach(x => {
+      if (e.target.checked) APP.cargoSelected.add(x.id); else APP.cargoSelected.delete(x.id);
+    });
+    renderCargoPage();
+  });
+
+  // Saved reports: view / delete
+  document.getElementById("cargoReportsBody").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-action]");
+    if (!btn) return;
+    const rid = btn.closest("tr").dataset.rid;
+    if (btn.dataset.action === "view") viewCargoReport(rid);
+    if (btn.dataset.action === "delete-report") {
+      const rep = APP.cargoReports.find(r => r.id === rid);
+      APP.pendingDeleteFn = () => {
+        APP.cargoReports = APP.cargoReports.filter(r => r.id !== rid);
+        APP.cargoEntries.forEach(x => { if (x.reportId === rid) { x.reportNo = null; x.reportId = null; } });
+        saveCargoReports(); saveCargoEntries();
+        renderCargoPage();
+        showToast("Report deleted. Its entries are available for a new report.", "success");
+      };
+      document.getElementById("modalDeleteText").textContent = `Report ${rep ? rep.no : ""} will be deleted and its entries will become "Not Reported" again.`;
+      openModal("modalDelete");
+    }
+  });
+}
+
+/* ---------- Cargo add / edit ---------- */
+function openCargoModal(id) {
+  APP.editingCargoId = id;
+  const c = id ? APP.cargos.find(x => x.id === id) : null;
+  document.getElementById("modalCargoTitle").textContent = c ? "Edit Cargo" : "Add Cargo";
+  document.getElementById("cgName").value = c ? c.name : "";
+  document.getElementById("cgMessage").value = c ? c.message : "";
+  document.getElementById("cgShowDate").checked = c ? !!c.showDateCol : false;
+  document.getElementById("cgHasMarking").checked = c ? !!c.hasMarking : false;
+  openModal("modalCargo");
+  setTimeout(() => document.getElementById("cgName").focus(), 30);
+}
+
+function saveCargoFromModal() {
+  const name = document.getElementById("cgName").value.trim().toUpperCase();
+  if (!name) { showToast("Please enter the cargo name.", "error"); return; }
+  const dup = APP.cargos.some(c => c.name.toLowerCase() === name.toLowerCase() && c.id !== APP.editingCargoId);
+  if (dup) { showToast("This cargo already exists.", "error"); return; }
+  const message = document.getElementById("cgMessage").value.trim() || `${name} BOOKING CHARGES FROM PUBLICATION.`;
+  const data = {
+    name, message,
+    showDateCol: document.getElementById("cgShowDate").checked,
+    hasMarking: document.getElementById("cgHasMarking").checked,
+  };
+  if (APP.editingCargoId) {
+    Object.assign(APP.cargos.find(c => c.id === APP.editingCargoId), data);
+  } else {
+    const c = { id: uid("cargo"), ...data };
+    APP.cargos.push(c);
+    APP.activeCargoId = c.id;
+    APP.cargoSelected.clear();
+  }
+  saveCargos();
+  closeModal("modalCargo");
+  renderCargoPage();
+  showToast("Cargo saved.", "success");
+}
+
+function deleteActiveCargo() {
+  const cargo = getActiveCargo();
+  if (!cargo) return;
+  const hasData = APP.cargoEntries.some(e => e.cargoId === cargo.id) || APP.cargoReports.some(r => r.cargoId === cargo.id);
+  if (hasData) { showToast("This cargo still has entries or reports. Delete those first.", "error"); return; }
+  APP.pendingDeleteFn = () => {
+    APP.cargos = APP.cargos.filter(c => c.id !== cargo.id);
+    APP.activeCargoId = APP.cargos.length ? APP.cargos[0].id : null;
+    saveCargos();
+    renderCargoPage();
+    showToast("Cargo deleted.", "success");
+  };
+  document.getElementById("modalDeleteText").textContent = `${cargo.name} will be removed from the Cargo Entry list.`;
+  openModal("modalDelete");
+}
+
+/* ---------- Cargo entry add / edit ---------- */
+function openCargoEntryModal(id) {
+  const cargo = getActiveCargo();
+  if (!cargo) return;
+  APP.editingCargoEntryId = id;
+  const e = id ? APP.cargoEntries.find(x => x.id === id) : null;
+  document.getElementById("modalCargoEntryTitle").textContent = (e ? "Edit Entry — " : "Add Entry — ") + cargo.name;
+  document.getElementById("ceDate").value = e ? e.dateBooking || "" : "";
+  document.getElementById("ceParty").value = e ? e.party || "" : "";
+  document.getElementById("ceArea").value = e ? e.area || "" : "";
+  document.getElementById("ceInvNo").value = e ? e.invNo || "" : "";
+  document.getElementById("ceBundles").value = e ? e.bundles : "";
+  document.getElementById("ceBilty").value = e ? e.bultyNo || "" : "";
+  document.getElementById("ceAmount").value = e ? e.amount : "";
+  document.getElementById("ceMarking").value = e ? (e.markingCharge || "") : "";
+  document.getElementById("ceMarkingField").hidden = !cargo.hasMarking;
+  document.getElementById("ceTotalField").hidden = !cargo.hasMarking;
+  updateCargoEntryTotal();
+  openModal("modalCargoEntry");
+  setTimeout(() => document.getElementById("ceDate").focus(), 30);
+}
+
+function updateCargoEntryTotal() {
+  document.getElementById("ceTotal").textContent = formatINR(cargoRowTotal(document.getElementById("ceAmount").value, document.getElementById("ceMarking").value));
+}
+
+function saveCargoEntryFromModal() {
+  const cargo = getActiveCargo();
+  if (!cargo) return;
+  const v = id => document.getElementById(id).value.trim();
+  if (!v("ceParty")) { showToast("Please enter the Party / School name.", "error"); return; }
+  if (!isValidNumber(v("ceBundles")) || !isValidNumber(v("ceAmount")) || !isValidNumber(v("ceMarking"))) {
+    showToast("Bundles and amounts must be numbers (0 or more).", "error"); return;
+  }
+  const data = {
+    dateBooking: v("ceDate"), party: v("ceParty"), area: v("ceArea"), invNo: v("ceInvNo"),
+    bundles: toNum(v("ceBundles")), bultyNo: v("ceBilty"), amount: toNum(v("ceAmount")),
+    markingCharge: cargo.hasMarking ? toNum(v("ceMarking")) : 0,
+  };
+  let note = "";
+  if (APP.editingCargoEntryId) {
+    const entry = APP.cargoEntries.find(x => x.id === APP.editingCargoEntryId);
+    Object.assign(entry, data);
+    if (entry.reportNo) note = ` Report ${entry.reportNo} keeps the old values.`;
+  } else {
+    APP.cargoEntries.push({ id: uid("ce"), cargoId: cargo.id, reportNo: null, reportId: null, ...data });
+  }
+  saveCargoEntries();
+  closeModal("modalCargoEntry");
+  renderCargoPage();
+  showToast("Entry saved." + note, "success");
+}
+
+/* ---------- Make report ---------- */
+function getCargoReportPool(cargo) {
+  const open = APP.cargoEntries.filter(e => e.cargoId === cargo.id && !e.reportNo);
+  const chosen = open.filter(e => APP.cargoSelected.has(e.id));
+  return chosen.length ? chosen : open;
+}
+
+// e.g. "23.07.2026" · "15,16 & 17.09.2026" · across months: "28.08.2026, 02.09.2026"
+function buildBookingDateLabel(entries) {
+  const dates = [...new Set(entries.map(e => e.dateBooking).filter(Boolean))].sort();
+  if (!dates.length) return "";
+  if (dates.length === 1) return formatDateDots(dates[0]);
+  const parts = dates.map(d => d.split("-"));
+  const sameMonth = parts.every(p => p[0] === parts[0][0] && p[1] === parts[0][1]);
+  if (!sameMonth) return dates.map(formatDateDots).join(", ");
+  const days = parts.map(p => String(parseInt(p[2], 10)));
+  const last = days.pop();
+  return `${days.join(",")} & ${last}.${parts[0][1]}.${parts[0][0]}`;
+}
+
+function openCargoReportModal() {
+  const cargo = getActiveCargo();
+  if (!cargo) return;
+  const pool = getCargoReportPool(cargo);
+  if (!pool.length) { showToast("No entries to report. Add entries first (or all are already in a report).", "error"); return; }
+  APP.pendingCargoPool = pool.map(e => e.id);
+  const usingSel = pool.some(e => APP.cargoSelected.has(e.id));
+  const totalBdl = pool.reduce((s, e) => s + toNum(e.bundles), 0);
+  const grand = pool.reduce((s, e) => s + cargoRowTotal(e.amount, cargo.hasMarking ? e.markingCharge : 0), 0);
+  document.getElementById("cargoReportSummary").innerHTML = `
+    <div class="row"><span>Cargo</span><span>${escapeHtml(cargo.name)}</span></div>
+    <div class="row"><span>Entries in report</span><span>${pool.length} ${usingSel ? "(selected)" : "(all not yet reported)"}</span></div>
+    <div class="row"><span>Total Bundles</span><span>${formatNumber(totalBdl)}</span></div>
+    <div class="row"><span>Total Amount</span><span>${formatINR(grand)}</span></div>`;
+  document.getElementById("crDate").value = todayISO();
+  document.getElementById("crBooking").value = buildBookingDateLabel(pool);
+  document.getElementById("crMessage").value = cargo.message;
+  openModal("modalCargoReport");
+}
+
+function confirmCargoReport() {
+  const cargo = getActiveCargo();
+  if (!cargo || !APP.pendingCargoPool) return;
+  const pool = APP.cargoEntries.filter(e => APP.pendingCargoPool.includes(e.id));
+  if (!pool.length) return;
+  const no = Math.max(0, ...APP.cargoReports.filter(r => r.cargoId === cargo.id).map(r => r.no)) + 1;
+  const rows = pool.map((e, i) => ({
+    seNo: i + 1, dateBooking: e.dateBooking, party: e.party, area: e.area, invNo: e.invNo,
+    bundles: toNum(e.bundles), bultyNo: e.bultyNo, amount: toNum(e.amount),
+    markingCharge: cargo.hasMarking ? toNum(e.markingCharge) : 0,
+    total: cargoRowTotal(e.amount, cargo.hasMarking ? e.markingCharge : 0),
+  }));
+  const rep = {
+    id: uid("crep"), cargoId: cargo.id, no,
+    cargoName: cargo.name, showDateCol: !!cargo.showDateCol, hasMarking: !!cargo.hasMarking,
+    exportDate: document.getElementById("crDate").value || todayISO(),
+    bookingLabel: document.getElementById("crBooking").value.trim(),
+    message: document.getElementById("crMessage").value.trim(),
+    rows,
+    totalBundles: rows.reduce((s, r) => s + r.bundles, 0),
+    totalAmount: rows.reduce((s, r) => s + r.amount, 0),
+    totalMarking: rows.reduce((s, r) => s + r.markingCharge, 0),
+    grandTotal: rows.reduce((s, r) => s + r.total, 0),
+  };
+  APP.cargoReports.push(rep);
+  pool.forEach(e => { e.reportNo = no; e.reportId = rep.id; APP.cargoSelected.delete(e.id); });
+  APP.pendingCargoPool = null;
+  saveCargoReports(); saveCargoEntries();
+  closeModal("modalCargoReport");
+  renderCargoPage();
+  viewCargoReport(rep.id);
+  showToast(`Report ${no} made for ${cargo.name}.`, "success");
+}
+
+function viewCargoReport(id) {
+  const rep = APP.cargoReports.find(r => r.id === id);
+  if (!rep) return;
+  APP.viewingExportNo = null;
+  document.getElementById("modalReportTitle").textContent = `${rep.cargoName} — Sales Expenses (Report ${rep.no})`;
+  document.getElementById("reportPrintArea").innerHTML = buildCargoReportHTML(rep);
+  document.getElementById("reportCommentBox").hidden = true;
+  openModal("modalReport");
+}
+
+// Matches the cargo ledger sheets: title, bundle-booking-date line, table, TOTAL, cargo message, In words / TOTAL AMT.
+function buildCargoReportHTML(d) {
+  const n = 5 + (d.showDateCol ? 1 : 0) + 1 + 1 + (d.hasMarking ? 2 : 0); // SE, PARTY, AREA, INV, BDL, [DATE], BILTY, AMOUNT, [MARKING, TOTAL]
+  const head = ["SE. NO", "PARTY / SCHOOL NAME", "AREA", "INV. NO.", "NO OF<br>BDL"];
+  if (d.showDateCol) head.push("BUNDLE BOOKING<br>DATE");
+  head.push("BILTY NO", "AMOUNT");
+  if (d.hasMarking) head.push("MARKING<br>CHARGE", "TOTAL<br>AMOUNT");
+
+  const body = d.rows.map(r => `
+      <tr>
+        <td class="center">${r.seNo}</td>
+        <td>${escapeHtml(r.party)}</td>
+        <td>${escapeHtml(r.area)}</td>
+        <td class="center">${cargoInvLines(r.invNo)}</td>
+        <td class="center">${formatNumber(r.bundles)}</td>
+        ${d.showDateCol ? `<td class="center">${escapeHtml(formatDateDots(r.dateBooking))}</td>` : ""}
+        <td class="center">${escapeHtml(r.bultyNo)}</td>
+        <td class="num">${formatINR(r.amount).replace("₹", "")}</td>
+        ${d.hasMarking ? `<td class="num">${formatINR(r.markingCharge).replace("₹", "")}</td><td class="num">${formatINR(r.total).replace("₹", "")}</td>` : ""}
+      </tr>`).join("");
+
+  // Totals: the last two columns carry the label + value (BILTY NO/AMOUNT, or MARKING/TOTAL AMOUNT)
+  const beforeLast = n - 2 - 5 - (d.showDateCol ? 1 : 0); // blank cells between BDL/date and the label column
+  const totalsRow = `
+      <tr class="report-totals-row">
+        <td></td><td></td><td></td>
+        <td class="right">TOTAL</td>
+        <td class="center">${formatNumber(d.totalBundles)}</td>
+        ${d.showDateCol ? "<td></td>" : ""}
+        ${d.hasMarking ? `<td></td><td></td>` : ""}
+        <td class="right">TOTAL</td>
+        <td class="num">${formatINR(d.grandTotal).replace("₹", "")}</td>
+      </tr>`;
+  void beforeLast;
+
+  return `
+  <div class="report-sheet">
+    <table class="report-table">
+      <tr><td colspan="${n}" class="report-cargo-title">SALES EXPENSES Date ${escapeHtml(formatDateDots(d.exportDate))}</td></tr>
+      ${d.bookingLabel ? `<tr><td colspan="${n}" class="report-cargo-sub">BUNDLE BOOKING Date ${escapeHtml(d.bookingLabel)}</td></tr>` : ""}
+      <tr class="report-col-head">${head.map(h => `<th>${h}</th>`).join("")}</tr>
+      ${body}
+      ${totalsRow}
+      <tr><td colspan="${n}" class="report-msg">${escapeHtml(d.message || "")}</td></tr>
+      <tr>
+        <td colspan="${n - 2}">In words:- ${numberToWordsIndian(d.grandTotal)}</td>
+        <td class="right">TOTAL AMT.</td>
+        <td class="num">${formatINR(d.grandTotal).replace("₹", "")}</td>
+      </tr>
+    </table>
+  </div>`;
+}
+
+
+// ===== Editable charge amounts (click an amount in the Charges column) =====
+function decorateChargeCells() {
+  document.querySelectorAll("#sheetBody td.charges-cell").forEach(td => {
+    const label = td.querySelector(".chg-export");
+    if (!label) return;
+    const exportNo = (label.textContent.match(/\d+/) || [""])[0];
+    const exp = APP.exports.find(x => Number(x.exportNo) === Number(exportNo));
+    const hasList = !!(exp && exp.reportData && (exp.reportData.charges || []).length);
+    let i = 0;
+    td.querySelectorAll(".chg-line:not(.chg-total)").forEach(line => {
+      const amt = line.lastElementChild;
+      if (!amt) return;
+      amt.classList.add("chg-amt");
+      amt.dataset.export = exportNo;
+      amt.dataset.ci = hasList ? i : -1;
+      amt.title = "Click to edit this amount";
+      i++;
+    });
+  });
+}
+
+function onChargeAmountClick(e) {
+  const el = e.target.closest(".chg-amt");
+  if (el && !el.querySelector("input")) startChargeEdit(el);
+}
+
+function startChargeEdit(el) {
+  const exportNo = Number(el.dataset.export);
+  const idx = Number(el.dataset.ci);
+  const exp = APP.exports.find(x => Number(x.exportNo) === exportNo);
+  if (!exp || !exp.reportData) return;
+  const rd = exp.reportData;
+  if (idx >= 0 && !(rd.charges || [])[idx]) return;
+  const current = idx >= 0 ? toNum(rd.charges[idx].amount) : toNum(rd.parCharges);
+  el.innerHTML = `<input type="number" min="0" step="0.01" class="chg-amt-input" value="${current}">`;
+  const input = el.querySelector("input");
+  input.focus();
+  input.select();
+  let done = false;
+  function finish(save) {
+    if (done) return;
+    done = true;
+    if (!save) { renderDispatchTable(); return; }
+    const raw = input.value.trim();
+    if (raw === "" || !isValidNumber(raw)) { showToast("Please enter a valid amount.", "error"); renderDispatchTable(); return; }
+    const val = toNum(raw);
+    if (val !== current) {
+      if (idx >= 0) {
+        const c = rd.charges[idx];
+        c.amount = val;
+        c.edited = true;
+        if (c.formula) { delete c.formula; showToast("This charge is now a fixed amount (no longer calculated per bundle).", "warning"); }
+        rd.parCharges = rd.charges.reduce((s, x) => s + toNum(x.amount), 0);
+      } else {
+        rd.parCharges = val;
+        rd.parChargesEdited = true;
+      }
+      rd.grandTotal = toNum(rd.totalAmount) + toNum(rd.parCharges);
+      saveExports();
+      showToast("Charge updated. Report total is now " + formatINR(rd.grandTotal) + ".", "success");
+    }
+    renderDispatchTable();
+    renderExportRegister();
+  }
+  input.addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Enter") { ev.preventDefault(); finish(true); }
+    else if (ev.key === "Escape") { ev.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+// Re-mark the amounts after every table draw
+const __renderDispatchTableOrig = renderDispatchTable;
+renderDispatchTable = function () { __renderDispatchTableOrig.apply(this, arguments); decorateChargeCells(); };
+document.getElementById("sheetBody").addEventListener("click", onChargeAmountClick);

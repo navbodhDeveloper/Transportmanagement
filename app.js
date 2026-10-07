@@ -28,6 +28,10 @@ const APP = {
   filters: { from: "", to: "", driver: "", mode: "", transporter: "", area: "", search: "" },
   sort: { key: "srlNo", dir: "asc" },
   view: "all", // all | regular | railways | relocation
+  page: 1,
+  pageSize: 5, // 0 = show all
+  totalPages: 1,
+  pageStart: 0,
   selected: new Set(),
   pendingDeleteFn: null,
   pendingImportRows: null,
@@ -347,6 +351,7 @@ function setupDispatchPage() {
     const btn = e.target.closest(".view-tab");
     if (!btn) return;
     APP.view = btn.dataset.view;
+    APP.page = 1;
     renderDispatchTable();
   });
   document.getElementById("btnEmptyReset").addEventListener("click", resetFilters);
@@ -364,7 +369,7 @@ function setupDispatchPage() {
   document.getElementById("btnPrintTable").addEventListener("click", printDispatchTable);
 
   document.getElementById("selectAllCheck").addEventListener("change", (e) => {
-    const rows = getFilteredRecords();
+    const rows = paginateRows(getFilteredRecords());
     if (e.target.checked) rows.forEach(r => APP.selected.add(r.id));
     else rows.forEach(r => APP.selected.delete(r.id));
     renderDispatchTable();
@@ -373,6 +378,7 @@ function setupDispatchPage() {
   document.querySelectorAll("#sheetTable thead th.sortable").forEach(th => {
     th.addEventListener("click", () => {
       const key = th.dataset.key;
+      APP.page = 1;
       if (APP.sort.key === key) APP.sort.dir = APP.sort.dir === "asc" ? "desc" : "asc";
       else { APP.sort.key = key; APP.sort.dir = "asc"; }
       renderDispatchTable();
@@ -390,6 +396,21 @@ function setupDispatchPage() {
   document.getElementById("importFileInput").addEventListener("change", handleImportFile);
   document.getElementById("btnConfirmImport").addEventListener("click", confirmImport);
 
+
+  document.getElementById("pager").addEventListener("click", (e) => {
+    const b = e.target.closest("[data-pg]");
+    if (!b || b.disabled) return;
+    APP.page = Number(b.dataset.pg);
+    renderDispatchTable();
+    document.getElementById("sheetTable").scrollIntoView({ block: "start" });
+  });
+  document.getElementById("pager").addEventListener("change", (e) => {
+    if (e.target.id !== "pageSizeSelect") return;
+    APP.pageSize = Number(e.target.value);
+    APP.page = 1;
+    renderDispatchTable();
+  });
+
   setupExportExcelDropdown();
 
   // Delete confirm
@@ -430,6 +451,7 @@ function setupExportExcelDropdown() {
 
 /* ---------- Filtering ---------- */
 function applyFiltersFromInputs() {
+  APP.page = 1;
   APP.filters.from = document.getElementById("fFromDate").value;
   APP.filters.to = document.getElementById("fToDate").value;
   APP.filters.driver = document.getElementById("fDriver").value;
@@ -441,6 +463,7 @@ function applyFiltersFromInputs() {
 }
 
 function resetFilters() {
+  APP.page = 1;
   APP.filters = { from: "", to: "", driver: "", mode: "", transporter: "", area: "", search: "" };
   document.getElementById("fFromDate").value = "";
   document.getElementById("fToDate").value = "";
@@ -514,7 +537,8 @@ function getFilteredRecords(ignoreView) {
 
 /* ---------- Table rendering ---------- */
 function renderDispatchTable() {
-  const rows = getFilteredRecords();
+  const all = getFilteredRecords();
+  const rows = paginateRows(all); // only the current page is drawn
   const tbody = document.getElementById("sheetBody");
   const emptyState = document.getElementById("dispatchEmpty");
   const scroll = document.getElementById("sheetScroll");
@@ -552,13 +576,14 @@ function renderDispatchTable() {
     tbody.innerHTML = rows.map((r, i) => rowHTML(r, { span: amtSpan[i] || 0, skip: amtSkip.has(i), cSpan: chgSpan[i] || 0, cSkip: chgSkip.has(i) })).join("");
   }
 
-  document.getElementById("filterResultCount").textContent = rows.length
-    ? `Showing ${rows.length} of ${APP.records.length} records`
+  document.getElementById("filterResultCount").textContent = all.length
+    ? `Showing ${all.length} of ${APP.records.length} records`
     : "";
 
   renderViewTabs();
-  updateSelectionInfo(rows);
-  renderSummaryBar(rows);
+  updateSelectionInfo(all);
+  renderSummaryBar(all);
+  renderPager(all.length);
   bindRowEvents();
 }
 
@@ -659,7 +684,7 @@ function bindRowEvents() {
     tr.querySelector('[data-action="duplicate"]').addEventListener("click", () => duplicateRecord(id));
     tr.querySelector('[data-action="delete"]').addEventListener("click", () => {
       APP.pendingDeleteFn = () => deleteRecord(id);
-      document.getElementById("modalDeleteText").textContent = "This record will be removed from the master sheet.";
+      document.getElementById("modalDeleteText").textContent = deleteWarningText(id);
       openModal("modalDelete");
     });
   });
@@ -764,11 +789,65 @@ function focusCell(recordId, field, dir) {
   }
 }
 
-function updateSelectionInfo(rows) {
-  const count = rows.filter(r => APP.selected.has(r.id)).length;
-  document.getElementById("selectionInfo").textContent = count > 0 ? `${count} selected` : "";
-  document.getElementById("selectAllCheck").checked = rows.length > 0 && count === rows.length;
-}
+
+function updateSelectionInfo(rows) {
+  const count = rows.filter(r => APP.selected.has(r.id)).length;
+  const pageRows = paginateRows(rows);
+  const onPage = pageRows.filter(r => APP.selected.has(r.id)).length;
+  document.getElementById("selectionInfo").textContent = count > 0 ? `${count} selected` : "";
+  document.getElementById("selectAllCheck").checked = pageRows.length > 0 && onPage === pageRows.length;
+}
+
+const PAGE_SIZES = [5, 10, 20, 50, 100, 0];
+
+// Slices the filtered rows into pages. Rows sharing a Bulty No. are never split across pages.
+function paginateRows(rows) {
+  const size = APP.pageSize;
+  if (!size) { APP.page = 1; APP.totalPages = 1; APP.pageStart = 0; return rows; }
+  const pages = [];
+  let cur = [];
+  for (let i = 0; i < rows.length;) {
+    const key = (rows[i].bultyNo || "").trim().toLowerCase();
+    let j = i + 1;
+    if (key) while (j < rows.length && (rows[j].bultyNo || "").trim().toLowerCase() === key) j++;
+    if (cur.length && cur.length + (j - i) > size) { pages.push(cur); cur = []; }
+    for (let k = i; k < j; k++) cur.push(rows[k]);
+    i = j;
+  }
+  if (cur.length) pages.push(cur);
+  APP.totalPages = Math.max(1, pages.length);
+  APP.page = Math.min(Math.max(1, APP.page), APP.totalPages);
+  APP.pageStart = pages.slice(0, APP.page - 1).reduce((s, p) => s + p.length, 0);
+  return pages[APP.page - 1] || [];
+}
+
+function renderPager(total) {
+  const el = document.getElementById("pager");
+  if (!el) return;
+  if (!total) { el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  const from = APP.pageStart + 1;
+  const to = APP.pageStart + paginateRows(getFilteredRecords()).length;
+  const cur = APP.page, last = APP.totalPages;
+  const nums = [];
+  for (let p = 1; p <= last; p++) if (p === 1 || p === last || Math.abs(p - cur) <= 1) nums.push(p);
+  let btns = "", prev = 0;
+  nums.forEach(p => {
+    if (prev && p - prev > 1) btns += `<span class="pager-gap">…</span>`;
+    btns += `<button type="button" class="pager-btn ${p === cur ? "active" : ""}" data-pg="${p}">${p}</button>`;
+    prev = p;
+  });
+  el.innerHTML = `
+    <span class="pager-info">Showing ${from}–${to} of ${total} records</span>
+    <div class="pager-nav">
+      <button type="button" class="pager-btn" data-pg="${cur - 1}" ${cur <= 1 ? "disabled" : ""}>‹ Previous</button>
+      ${btns}
+      <button type="button" class="pager-btn" data-pg="${cur + 1}" ${cur >= last ? "disabled" : ""}>Next ›</button>
+    </div>
+    <label class="pager-size">Rows per page
+      <select id="pageSizeSelect">${PAGE_SIZES.map(n => `<option value="${n}" ${n === APP.pageSize ? "selected" : ""}>${n || "All"}</option>`).join("")}</select>
+    </label>`;
+}
 
 function renderSummaryBar(rows) {
   const totalBundles = rows.reduce((s, r) => s + toNum(r.bundles), 0);
@@ -1520,7 +1599,7 @@ function buildReportHTML(d) {
     </tr>`;
   }).join("");
 
-  const hasEdits = d.rows.some(r => (r.editedFields || []).length > 0);
+  const hasEdits = d.rows.some(r => (r.editedFields || []).length > 0) || (d.charges || []).some(c => c.edited) || !!d.parChargesEdited;
   const driverEdited = d.rows.some(r => (r.editedFields || []).includes("driver"));
 
   return `
@@ -1557,12 +1636,12 @@ function buildReportHTML(d) {
       <tr>
         <td colspan="7">${escapeHtml(c.description !== undefined ? c.description : (i === 0 ? "Local transport booking cost from publication." : ""))}</td>
         <td class="right">${c.formula ? escapeHtml(c.formula) : escapeHtml((c.label || "PAR.CHg").toUpperCase())}</td>
-        <td class="num">${formatINR(c.amount).replace("₹", "")}</td>
+        <td class="num">${c.edited ? `<span class="edited-mark" title="Corrected after this report was generated">${formatINR(c.amount).replace("₹", "")}</span>` : formatINR(c.amount).replace("₹", "")}</td>
       </tr>`).join("") : `
       <tr>
         <td colspan="7">Local transport booking cost from publication.</td>
         <td class="right">PAR.CHg</td>
-        <td class="num">${formatINR(d.parCharges || 0).replace("₹", "")}</td>
+        <td class="num">${d.parChargesEdited ? `<span class="edited-mark" title="Corrected after this report was generated">${formatINR(d.parCharges || 0).replace("₹", "")}</span>` : formatINR(d.parCharges || 0).replace("₹", "")}</td>
       </tr>`}
       <tr>
         <td colspan="7">In words:- ${numberToWordsIndian(d.grandTotal)}</td>
@@ -2659,3 +2738,142 @@ function buildCargoReportHTML(d) {
     </table>
   </div>`;
 }
+
+
+// ===== Editable charge amounts (click an amount in the Charges column) =====
+function decorateChargeCells() {
+  document.querySelectorAll("#sheetBody td.charges-cell").forEach(td => {
+    const label = td.querySelector(".chg-export");
+    if (!label) return;
+    const exportNo = (label.textContent.match(/\d+/) || [""])[0];
+    const exp = APP.exports.find(x => Number(x.exportNo) === Number(exportNo));
+    const hasList = !!(exp && exp.reportData && (exp.reportData.charges || []).length);
+    let i = 0;
+    td.querySelectorAll(".chg-line:not(.chg-total)").forEach(line => {
+      const amt = line.lastElementChild;
+      if (!amt) return;
+      amt.classList.add("chg-amt");
+      amt.dataset.export = exportNo;
+      amt.dataset.ci = hasList ? i : -1;
+      amt.title = "Click to edit this amount";
+      i++;
+    });
+  });
+}
+
+function onChargeAmountClick(e) {
+  const el = e.target.closest(".chg-amt");
+  if (el && !el.querySelector("input")) startChargeEdit(el);
+}
+
+function startChargeEdit(el) {
+  const exportNo = Number(el.dataset.export);
+  const idx = Number(el.dataset.ci);
+  const exp = APP.exports.find(x => Number(x.exportNo) === exportNo);
+  if (!exp || !exp.reportData) return;
+  const rd = exp.reportData;
+  if (idx >= 0 && !(rd.charges || [])[idx]) return;
+  const current = idx >= 0 ? toNum(rd.charges[idx].amount) : toNum(rd.parCharges);
+  el.innerHTML = `<input type="number" min="0" step="0.01" class="chg-amt-input" value="${current}">`;
+  const input = el.querySelector("input");
+  input.focus();
+  input.select();
+  let done = false;
+  function finish(save) {
+    if (done) return;
+    done = true;
+    if (!save) { renderDispatchTable(); return; }
+    const raw = input.value.trim();
+    if (raw === "" || !isValidNumber(raw)) { showToast("Please enter a valid amount.", "error"); renderDispatchTable(); return; }
+    const val = toNum(raw);
+    if (val !== current) {
+      if (idx >= 0) {
+        const c = rd.charges[idx];
+        c.amount = val;
+        c.edited = true;
+        if (c.formula) { delete c.formula; showToast("This charge is now a fixed amount (no longer calculated per bundle).", "warning"); }
+        rd.parCharges = rd.charges.reduce((s, x) => s + toNum(x.amount), 0);
+      } else {
+        rd.parCharges = val;
+        rd.parChargesEdited = true;
+      }
+      rd.grandTotal = toNum(rd.totalAmount) + toNum(rd.parCharges);
+      saveExports();
+      showToast("Charge updated. Report total is now " + formatINR(rd.grandTotal) + ".", "success");
+    }
+    renderDispatchTable();
+    renderExportRegister();
+  }
+  input.addEventListener("keydown", (ev) => {
+    ev.stopPropagation();
+    if (ev.key === "Enter") { ev.preventDefault(); finish(true); }
+    else if (ev.key === "Escape") { ev.preventDefault(); finish(false); }
+  });
+  input.addEventListener("blur", () => finish(true));
+}
+
+// Re-mark the amounts after every table draw
+const __renderDispatchTableOrig = renderDispatchTable;
+renderDispatchTable = function () { __renderDispatchTableOrig.apply(this, arguments); decorateChargeCells(); };
+document.getElementById("sheetBody").addEventListener("click", onChargeAmountClick);
+
+
+// ===== Deleting an exported record also removes it from its saved report =====
+function removeRecordFromExport(rec) {
+  const exp = APP.exports.find(e => Number(e.exportNo) === Number(rec.exportNo));
+  if (!exp || !exp.reportData) return false;
+  const rd = exp.reportData;
+  let i = rd.rows.findIndex(r => r.id === rec.id);
+  if (i < 0) i = rd.rows.findIndex(r => !r.id && r.srlNo === rec.srlNo); // older exports without row ids
+  if (i < 0) return false;
+
+  rd.rows.splice(i, 1);
+  rd.rows.forEach((r, k) => { r.seNo = k + 1; });
+  rd.totalBundles = rd.rows.reduce((s, r) => s + toNum(r.bundles), 0);
+  rd.totalAmount = computeDedupedAmount(rd.rows);
+
+  // per-bundle charges (e.g. "70*40") follow the new bundle total, same rate
+  if (Array.isArray(rd.charges)) {
+    rd.charges.forEach(c => {
+      if (!c.formula) return;
+      const m = /^\s*[\d.]+\s*\*\s*([\d.]+)\s*$/.exec(c.formula);
+      if (!m) return;
+      const rate = toNum(m[1]);
+      c.amount = rd.totalBundles * rate;
+      c.formula = `${rd.totalBundles}*${rate}`;
+    });
+    rd.parCharges = rd.charges.reduce((s, c) => s + toNum(c.amount), 0);
+  }
+  rd.grandTotal = rd.totalAmount + toNum(rd.parCharges);
+  rd.driverLabel = computeDriverLabel(rd.rows);
+
+  const srls = rd.rows.map(r => toNum(r.srlNo));
+  exp.recordCount = rd.rows.length;
+  exp.totalAmount = rd.totalAmount;
+  exp.driver = rd.driverLabel;
+  exp.transportMode = computeModeLabel(rd.rows);
+  exp.srlFrom = srls.length ? Math.min(...srls) : "";
+  exp.srlTo = srls.length ? Math.max(...srls) : "";
+  if (!rd.rows.length) exp.status = "Empty";
+  saveExports();
+  return true;
+}
+
+function deleteWarningText(id) {
+  const rec = APP.records.find(r => r.id === id);
+  if (rec && rec.exportNo) return `This record is part of Export ${rec.exportNo}. It will also be removed from that report, and the report totals will be recalculated.`;
+  return "This record will be removed from the master sheet.";
+}
+
+const __deleteRecordOrig = deleteRecord;
+deleteRecord = function (id) {
+  const rec = APP.records.find(r => r.id === id);
+  const snap = rec ? { ...rec } : null;
+  __deleteRecordOrig.apply(this, arguments);
+  if (snap && snap.exportNo && removeRecordFromExport(snap)) {
+    renderDispatchTable();
+    renderExportRegister();
+    renderDashboard();
+    showToast(`Also removed from Export ${snap.exportNo} — report recalculated.`, "success");
+  }
+};
