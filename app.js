@@ -1158,8 +1158,11 @@ function startExportFlow() {
         <span>${formatNumber(batch.included.reduce((s, r) => s + toNum(r.bundles), 0))} bundles ×</span>
         <input type="number" id="exRailwayRate" min="0" step="0.01" placeholder="Rate per bundle">
         <span id="exRailwayComputedAmount">= ₹0.00</span>
-        <input type="text" id="exRailwayMessage" class="charge-message" list="chargeMessageOptions" value="${escapeHtml(DEFAULT_RAILWAY_MESSAGE)}" placeholder="Message shown on the report">
       </div>
+    </div>
+    <div class="field">
+      <label for="exMessage">Message on report (optional)</label>
+      <input type="text" id="exMessage" list="chargeMessageOptions" placeholder="e.g. Local transport booking cost from publication.">
     </div>
     <div class="field">
       <label for="exComment">Comment / Remark (optional)</label>
@@ -1208,7 +1211,6 @@ function chargeRowHTML(label, amount, message) {
       <button type="button" class="icon-btn btn-sm charge-remove" title="Remove charge">
         <svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/></svg>
       </button>
-      <input type="text" class="charge-message" list="chargeMessageOptions" placeholder="Message shown on the report, e.g. CHARGES OF RELOCATING FROM BHOPAL." value="${escapeHtml(message === undefined ? "" : message)}">
     </div>`;
 }
 
@@ -1333,7 +1335,6 @@ function confirmExport() {
   // Parking / local transport charges — one or more named line items entered at export time
   const charges = Array.from(document.querySelectorAll("#exChargesContainer .charge-row")).map(row => ({
     label: row.querySelector(".charge-label").value.trim(),
-    description: row.querySelector(".charge-message").value.trim(),
     amount: toNum(row.querySelector(".charge-amount").value),
   })).filter(c => c.label && c.amount > 0);
 
@@ -1343,7 +1344,6 @@ function confirmExport() {
     if (rate > 0) {
       charges.push({
         label: "Railway Bundle Handling Charge",
-        description: (document.getElementById("exRailwayMessage").value || "").trim(),
         amount: totalBundles * rate,
         formula: `${totalBundles}*${rate}`,
       });
@@ -1370,6 +1370,7 @@ function confirmExport() {
       exportNo, voNo, exportDate, bookingDate,
       rows, totalBundles, totalAmount, parCharges, charges, grandTotal,
       driverLabel, companyName: APP.settings.companyName || "", comment,
+      message: (document.getElementById("exMessage") ? document.getElementById("exMessage").value.trim() : ""),
     },
   };
   APP.exports.push(exportRecord);
@@ -1634,12 +1635,12 @@ function buildReportHTML(d) {
       </tr>
       ${(d.charges && d.charges.length) ? d.charges.map((c, i) => `
       <tr>
-        <td colspan="7">${escapeHtml(c.description !== undefined ? c.description : (i === 0 ? "Local transport booking cost from publication." : ""))}</td>
+        ${d.message === undefined ? `<td colspan="7">${escapeHtml(c.description !== undefined ? c.description : (i === 0 ? "Local transport booking cost from publication." : ""))}</td>` : (i === 0 ? `<td colspan="7" rowspan="${d.charges.length}">${escapeHtml(d.message)}</td>` : "")}
         <td class="right">${c.formula ? escapeHtml(c.formula) : escapeHtml((c.label || "PAR.CHg").toUpperCase())}</td>
         <td class="num">${c.edited ? `<span class="edited-mark" title="Corrected after this report was generated">${formatINR(c.amount).replace("₹", "")}</span>` : formatINR(c.amount).replace("₹", "")}</td>
       </tr>`).join("") : `
       <tr>
-        <td colspan="7">Local transport booking cost from publication.</td>
+        <td colspan="7">${d.message === undefined ? "Local transport booking cost from publication." : escapeHtml(d.message)}</td>
         <td class="right">PAR.CHg</td>
         <td class="num">${d.parChargesEdited ? `<span class="edited-mark" title="Corrected after this report was generated">${formatINR(d.parCharges || 0).replace("₹", "")}</span>` : formatINR(d.parCharges || 0).replace("₹", "")}</td>
       </tr>`}
@@ -2876,4 +2877,379 @@ deleteRecord = function (id) {
     renderDashboard();
     showToast(`Also removed from Export ${snap.exportNo} — report recalculated.`, "success");
   }
+};
+
+
+// ===== Pagination for Export Register + Cargo Entry tables =====
+const PG = { exports: { page: 1, size: 5 }, cargo: { page: 1, size: 5 }, lastCargo: null };
+const PG_CFG = {
+  exports: { rows: "#exportRegisterBody tr", after: "#page-exports .sheet-panel", pager: "pagerExports", noun: "exports" },
+  cargo: { rows: "#cargoRows tr", after: "#cargoWrap .sheet-panel", pager: "pagerCargo", noun: "entries" },
 };
+
+function paginateDom(key) {
+  const st = PG[key], cfg = PG_CFG[key];
+  const rows = [...document.querySelectorAll(cfg.rows)];
+  const total = rows.length;
+  const pages = st.size ? Math.max(1, Math.ceil(total / st.size)) : 1;
+  st.page = Math.min(Math.max(1, st.page), pages);
+  const start = st.size ? (st.page - 1) * st.size : 0;
+  const end = st.size ? Math.min(start + st.size, total) : total;
+  rows.forEach((tr, i) => { tr.hidden = !(i >= start && i < end); });
+
+  const el = document.getElementById(cfg.pager);
+  if (!el) return;
+  if (!total) { el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  const cur = st.page, nums = [];
+  for (let p = 1; p <= pages; p++) if (p === 1 || p === pages || Math.abs(p - cur) <= 1) nums.push(p);
+  let btns = "", prev = 0;
+  nums.forEach(p => {
+    if (prev && p - prev > 1) btns += `<span class="pager-gap">…</span>`;
+    btns += `<button type="button" class="pager-btn ${p === cur ? "active" : ""}" data-pgn="${p}">${p}</button>`;
+    prev = p;
+  });
+  el.innerHTML = `
+    <span class="pager-info">Showing ${start + 1}–${end} of ${total} ${cfg.noun}</span>
+    <div class="pager-nav">
+      <button type="button" class="pager-btn" data-pgn="${cur - 1}" ${cur <= 1 ? "disabled" : ""}>‹ Previous</button>
+      ${btns}
+      <button type="button" class="pager-btn" data-pgn="${cur + 1}" ${cur >= pages ? "disabled" : ""}>Next ›</button>
+    </div>
+    <label class="pager-size">Rows per page
+      <select>${[5, 10, 20, 50, 100, 0].map(n => `<option value="${n}" ${n === st.size ? "selected" : ""}>${n || "All"}</option>`).join("")}</select>
+    </label>`;
+}
+
+["exports", "cargo"].forEach(key => {
+  const cfg = PG_CFG[key];
+  const anchor = document.querySelector(cfg.after);
+  if (!anchor) return;
+  const el = document.createElement("div");
+  el.className = "pager";
+  el.id = cfg.pager;
+  el.hidden = true;
+  anchor.insertAdjacentElement("afterend", el);
+  el.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-pgn]");
+    if (!b || b.disabled) return;
+    PG[key].page = Number(b.dataset.pgn);
+    paginateDom(key);
+  });
+  el.addEventListener("change", (e) => {
+    if (e.target.tagName !== "SELECT") return;
+    PG[key].size = Number(e.target.value);
+    PG[key].page = 1;
+    paginateDom(key);
+  });
+});
+
+const __renderExportRegisterOrig = renderExportRegister;
+renderExportRegister = function () { __renderExportRegisterOrig.apply(this, arguments); paginateDom("exports"); };
+
+const __renderCargoPageOrig = renderCargoPage;
+renderCargoPage = function () {
+  if (APP.activeCargoId !== PG.lastCargo) { PG.lastCargo = APP.activeCargoId; PG.cargo.page = 1; } // new cargo tab -> page 1
+  __renderCargoPageOrig.apply(this, arguments);
+  paginateDom("cargo");
+};
+
+
+// ===== Pagination for Cargo "Saved Reports" =====
+PG.reports = { page: 1, size: 5, lastCargo: null, lastCount: 0 };
+PG_CFG.reports = { rows: "#cargoReportsBody tr", pager: "pagerReports", noun: "reports" };
+(function () {
+  const body = document.getElementById("cargoReportsBody");
+  const anchor = body && body.closest(".sheet-panel");
+  if (!anchor) return;
+  const el = document.createElement("div");
+  el.className = "pager";
+  el.id = "pagerReports";
+  el.hidden = true;
+  anchor.insertAdjacentElement("afterend", el);
+  el.addEventListener("click", (e) => {
+    const b = e.target.closest("[data-pgn]");
+    if (!b || b.disabled) return;
+    PG.reports.page = Number(b.dataset.pgn);
+    paginateDom("reports");
+  });
+  el.addEventListener("change", (e) => {
+    if (e.target.tagName !== "SELECT") return;
+    PG.reports.size = Number(e.target.value);
+    PG.reports.page = 1;
+    paginateDom("reports");
+  });
+})();
+
+const __renderCargoPageOrig2 = renderCargoPage;
+renderCargoPage = function () {
+  __renderCargoPageOrig2.apply(this, arguments);
+  const n = document.querySelectorAll("#cargoReportsBody tr").length;
+  if (APP.activeCargoId !== PG.reports.lastCargo || n > PG.reports.lastCount) PG.reports.page = 1; // new cargo tab or new report -> newest first
+  PG.reports.lastCargo = APP.activeCargoId;
+  PG.reports.lastCount = n;
+  paginateDom("reports");
+};
+
+
+// ===== Cargo Entry: Duplicate button on each entry =====
+const CARGO_ICON_DUP = `<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>`;
+
+function duplicateCargoEntry(id) {
+  const i = APP.cargoEntries.findIndex(x => x.id === id);
+  if (i < 0) return;
+  const copy = { ...APP.cargoEntries[i], id: uid("ce"), reportNo: null, reportId: null };
+  APP.cargoEntries.splice(i + 1, 0, copy); // right below the original
+  saveCargoEntries();
+  renderCargoPage();
+  showToast("Entry duplicated.", "success");
+}
+
+const __renderCargoPageOrig3 = renderCargoPage;
+renderCargoPage = function () {
+  __renderCargoPageOrig3.apply(this, arguments);
+  document.querySelectorAll("#cargoRows tr .cell-actions").forEach(box => {
+    if (box.querySelector('[data-action="duplicate"]')) return;
+    const btn = document.createElement("button");
+    btn.className = "icon-btn btn-sm";
+    btn.dataset.action = "duplicate";
+    btn.title = "Duplicate entry";
+    btn.innerHTML = CARGO_ICON_DUP;
+    const del = box.querySelector('[data-action="delete"]');
+    box.insertBefore(btn, del || null);
+  });
+};
+document.getElementById("cargoRows").addEventListener("click", (e) => {
+  const btn = e.target.closest('[data-action="duplicate"]');
+  if (btn) duplicateCargoEntry(btn.closest("tr").dataset.id);
+});
+
+
+// ===== An export with no records left is removed from the Export Register =====
+function dropEmptyExports() {
+  const before = APP.exports.length;
+  APP.exports = APP.exports.filter(e => !(e.reportData && Array.isArray(e.reportData.rows) && e.reportData.rows.length === 0));
+  if (APP.exports.length === before) return false;
+  const live = new Set(APP.exports.map(e => Number(e.exportNo)));
+  [...APP.selectedExports].forEach(n => { if (!live.has(Number(n))) APP.selectedExports.delete(n); });
+  saveExports();
+  return true;
+}
+
+const __removeRecordFromExportOrig = removeRecordFromExport;
+removeRecordFromExport = function (rec) {
+  const ok = __removeRecordFromExportOrig.apply(this, arguments);
+  if (ok && dropEmptyExports()) showToast(`Export ${rec.exportNo} had no records left, so it was removed.`, "success");
+  return ok;
+};
+
+// clean up empty exports that are already saved (runs once the app has loaded)
+document.addEventListener("DOMContentLoaded", () => {
+  if (dropEmptyExports()) { renderExportRegister(); renderDispatchTable(); renderDashboard(); }
+});
+
+
+// ===== Cargo report: Comment / Remark box (same as the Export report) =====
+APP.viewingCargoReportId = null;
+
+const __buildCargoReportHTMLOrig = buildCargoReportHTML;
+buildCargoReportHTML = function (d) {
+  let html = __buildCargoReportHTMLOrig.apply(this, arguments);
+  if (d && d.comment) {
+    const n = 5 + (d.showDateCol ? 1 : 0) + 1 + 1 + (d.hasMarking ? 2 : 0);
+    const row = `<tr><td colspan="${n}" class="report-comment-row">Remarks:- ${escapeHtml(d.comment)}</td></tr>`;
+    const i = html.lastIndexOf("</table>");
+    if (i >= 0) html = html.slice(0, i) + row + html.slice(i);
+  }
+  return html;
+};
+
+const __viewCargoReportOrig = viewCargoReport;
+viewCargoReport = function (id) {
+  __viewCargoReportOrig.apply(this, arguments);
+  const rep = APP.cargoReports.find(r => r.id === id);
+  if (!rep) return;
+  APP.viewingCargoReportId = id;
+  document.getElementById("reportCommentInput").value = rep.comment || "";
+  document.getElementById("reportCommentBox").hidden = false;
+};
+
+const __viewExportOrig = viewExport;
+viewExport = function () { APP.viewingCargoReportId = null; return __viewExportOrig.apply(this, arguments); };
+const __printSelectedExportsOrig = printSelectedExports;
+printSelectedExports = function () { APP.viewingCargoReportId = null; return __printSelectedExportsOrig.apply(this, arguments); };
+
+const __saveReportCommentOrig = saveReportComment;
+saveReportComment = function () {
+  if (!APP.viewingCargoReportId) return __saveReportCommentOrig.apply(this, arguments);
+  const rep = APP.cargoReports.find(r => r.id === APP.viewingCargoReportId);
+  if (!rep) return;
+  rep.comment = document.getElementById("reportCommentInput").value.trim();
+  saveCargoReports();
+  document.getElementById("reportPrintArea").innerHTML = buildCargoReportHTML(rep);
+  showToast("Comment saved.", "success");
+};
+
+
+// ===== Cargo Entry: Import Excel / Export Excel =====
+function cargoExportExcel() {
+  const cargo = getActiveCargo();
+  if (!cargo) return;
+  const entries = APP.cargoEntries.filter(e => e.cargoId === cargo.id);
+  if (!entries.length) { showToast("There are no entries to export.", "error"); return; }
+  const data = entries.map((e, i) => {
+    const row = {
+      "SE. NO": i + 1,
+      "DATE OF BOOKING": formatDateDMY(e.dateBooking),
+      "PARTY / SCHOOL NAME": e.party,
+      "AREA": e.area,
+      "INV. NO.": e.invNo,
+      "NO OF BDL": e.bundles,
+      "BILTY NO": e.bultyNo,
+      "AMOUNT": e.amount,
+    };
+    if (cargo.hasMarking) {
+      row["MARKING CHARGE"] = e.markingCharge || 0;
+      row["TOTAL AMOUNT"] = cargoRowTotal(e.amount, e.markingCharge);
+    }
+    row["REPORT STATUS"] = e.reportNo ? "Report " + e.reportNo : "";
+    return row;
+  });
+  const safe = cargo.name.replace(/[^\w\-]+/g, "_");
+  const filename = `cargo-${safe}-${todayISO()}.xlsx`;
+  if (typeof XLSX !== "undefined") {
+    const ws = XLSX.utils.json_to_sheet(data);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, "Cargo Entries");
+    XLSX.writeFile(wb, filename);
+  } else {
+    const headers = Object.keys(data[0]);
+    const csv = [headers.join(",")]
+      .concat(data.map(r => headers.map(h => `"${String(r[h] ?? "").replace(/"/g, '""')}"`).join(",")))
+      .join("\n");
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(new Blob([csv], { type: "text/csv;charset=utf-8;" }));
+    a.download = filename.replace(".xlsx", ".csv");
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }
+  showToast(`${entries.length} entr${entries.length === 1 ? "y" : "ies"} exported to Excel.`, "success");
+}
+
+function parseCargoMatrix(matrix) {
+  const out = [];
+  let ci = null, mk = -1;
+  for (const row of matrix) {
+    const cand = buildColumnIndex(row);
+    if (cand.party !== undefined && cand.amount !== undefined) {
+      ci = cand;
+      mk = (row || []).map(normHeaderLabel).findIndex(h => h === "marking charge" || h === "marking");
+      continue;
+    }
+    if (!ci) continue;
+    const get = k => ci[k] !== undefined ? row[ci[k]] : "";
+    const party = String(get("party") || "").trim();
+    if (!party || LEDGER_SKIP_LINE.test(party)) continue;
+    if (!isValidImportNumber(get("amount"))) continue;
+    out.push({
+      dateBooking: normalizeImportedDate(get("dateBooking")),
+      party,
+      area: String(get("area") || "").trim(),
+      invNo: String(get("invNo") || "").replace(/[\r\n]+/g, ", ").trim(),
+      bundles: toNumImport(get("bundles")),
+      bultyNo: String(get("bultyNo") || "").trim(),
+      amount: toNumImport(get("amount")),
+      markingCharge: mk >= 0 ? toNumImport(row[mk]) : 0,
+    });
+  }
+  return out;
+}
+
+function handleCargoImportFile(e) {
+  const file = e.target.files[0];
+  if (!file) return;
+  const cargo = getActiveCargo();
+  if (!cargo) return;
+  const isCSV = /\.csv$/i.test(file.name);
+  const reader = new FileReader();
+  reader.onload = function (evt) {
+    let rows = [];
+    try {
+      if (!isCSV && typeof XLSX !== "undefined") {
+        const wb = XLSX.read(evt.target.result, { type: "array" });
+        wb.SheetNames.forEach(n => {
+          rows = rows.concat(parseCargoMatrix(XLSX.utils.sheet_to_json(wb.Sheets[n], { header: 1, raw: false, defval: "" })));
+        });
+      } else {
+        const text = typeof evt.target.result === "string" ? evt.target.result : new TextDecoder().decode(evt.target.result);
+        rows = parseCargoMatrix(parseCSV(text));
+      }
+    } catch (err) {
+      console.error(err);
+      showToast("Could not read this file. Please check the format and try again.", "error");
+      return;
+    }
+    if (!rows.length) { showToast("No recognizable cargo entries were found in this file.", "error"); return; }
+    const key = r => [r.party, r.invNo, r.bultyNo, r.amount].join("|").toUpperCase();
+    const have = new Set(APP.cargoEntries.filter(x => x.cargoId === cargo.id).map(key));
+    const fresh = rows.filter(r => { const k = key(r); if (have.has(k)) return false; have.add(k); return true; });
+    const skipped = rows.length - fresh.length;
+    if (!fresh.length) { showToast("All rows already exist in this cargo. Nothing imported.", "warning"); return; }
+    if (!confirm(`Import ${fresh.length} entr${fresh.length === 1 ? "y" : "ies"} into ${cargo.name}?` + (skipped ? `\n(${skipped} duplicate row(s) will be skipped.)` : ""))) return;
+    fresh.forEach(r => APP.cargoEntries.push({
+      id: uid("ce"), cargoId: cargo.id, reportNo: null, reportId: null, ...r,
+      markingCharge: cargo.hasMarking ? r.markingCharge : 0,
+    }));
+    saveCargoEntries();
+    renderCargoPage();
+    showToast(`Imported ${fresh.length} entr${fresh.length === 1 ? "y" : "ies"}.` + (skipped ? ` Skipped ${skipped} duplicate(s).` : ""), "success");
+  };
+  if (isCSV) reader.readAsText(file); else reader.readAsArrayBuffer(file);
+}
+
+(function setupCargoExcelButtons() {
+  const bar = document.querySelector("#cargoWrap .action-bar");
+  const addBtn = document.getElementById("btnAddCargoEntry");
+  if (!bar || !addBtn || document.getElementById("btnCargoImport")) return;
+  const mk = (id, label, svg) => {
+    const b = document.createElement("button");
+    b.className = "btn btn-secondary"; b.id = id;
+    b.innerHTML = svg + " " + label;
+    return b;
+  };
+  const icn = p => `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${p}</svg>`;
+  const imp = mk("btnCargoImport", "Import Excel", icn('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>'));
+  const exp = mk("btnCargoExport", "Export Excel", icn('<path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/>'));
+  const fi = document.createElement("input");
+  fi.type = "file"; fi.id = "cargoImportInput"; fi.accept = ".xlsx,.xls,.csv"; fi.hidden = true;
+  addBtn.insertAdjacentElement("afterend", exp);
+  addBtn.insertAdjacentElement("afterend", imp);
+  bar.appendChild(fi);
+  imp.addEventListener("click", () => { fi.value = ""; fi.click(); });
+  fi.addEventListener("change", handleCargoImportFile);
+  exp.addEventListener("click", cargoExportExcel);
+})();
+
+
+// ===== Party / School name dropdown (suggestions from saved names) =====
+(function () {
+  const dl = document.createElement("datalist");
+  dl.id = "partyListOptions";
+  document.body.appendChild(dl);
+  const pf = RECORD_FIELDS.find(f => f.key === "party");
+  if (pf) { pf.type = "text-list"; pf.list = "partyListOptions"; }
+  const ce = document.getElementById("ceParty");
+  if (ce) ce.setAttribute("list", "partyListOptions");
+})();
+function refreshPartyList() {
+  const seen = new Map();
+  APP.records.concat(APP.cargoEntries).forEach(r => {
+    const n = String(r.party || "").trim();
+    if (n && !seen.has(n.toUpperCase())) seen.set(n.toUpperCase(), n);
+  });
+  fillDatalist("partyListOptions", [...seen.values()].sort((a, b) => a.localeCompare(b)));
+}
+const __openRecordModalOrig = openRecordModal;
+openRecordModal = function () { refreshPartyList(); return __openRecordModalOrig.apply(this, arguments); };
+const __openCargoEntryModalOrig = openCargoEntryModal;
+openCargoEntryModal = function () { refreshPartyList(); return __openCargoEntryModalOrig.apply(this, arguments); };

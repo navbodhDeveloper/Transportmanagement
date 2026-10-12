@@ -500,3 +500,13 @@ input.input-error{border-color:var(--red-600);background:var(--red-100);}
   .report-sheet{break-inside:avoid;page-break-inside:avoid;}
   .report-sheet + .report-sheet{page-break-before:auto !important;break-before:auto !important;margin-top:16px !important;padding-top:0 !important;border-top:none !important;}
 }
+
+
+/* Corrections stay highlighted on screen but are not printed */
+@media print{
+  .edited-mark{background:transparent !important;border-bottom:none !important;padding:0 !important;}
+  .report-edit-footnote{display:none !important;}
+}
+
+/* Pagination: hidden rows on Export Register / Cargo Entry */
+.sheet-table tbody tr[hidden]{display:none !important;}
