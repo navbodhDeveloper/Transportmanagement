@@ -665,8 +665,6 @@ function bindRowEvents() {
         if (field === "amount") {
           const match = findMatchingBultyRecord(record.bultyNo, record.id);
           if (match) {
-            showToast(`Amount is locked — Bulty No. "${record.bultyNo}" is shared with another record, and one bilty has one price (${formatINR(match.amount)}). Change the Bulty No. first if this shouldn't be grouped.`, "error");
-            return;
           }
         }
         const fieldDef = RECORD_FIELDS.find(f => f.key === field);
@@ -732,6 +730,7 @@ function startCellEdit(td, record, field, type) {
       }
     }
     record[field] = val;
+    if (field === "amount") applySharedBultyAmount(record.bultyNo, toNum(record.amount), record.id);
     if (field === "bultyNo") {
       const match = findMatchingBultyRecord(val, record.id);
       if (match && toNum(record.amount) !== toNum(match.amount)) {
@@ -890,14 +889,14 @@ function setupBultyAmountLock() {
     let hint = document.getElementById("bultyAmountHint");
     if (match) {
       amountInput.value = match.amount;
-      amountInput.disabled = true;
+      amountInput.disabled = false;
       if (!hint) {
         hint = document.createElement("p");
         hint.id = "bultyAmountHint";
         hint.className = "field-hint";
         amountInput.closest(".field").appendChild(hint);
       }
-      hint.textContent = `Locked — this Bulty No. is already used by another record, and one bilty has one shared price (${formatINR(match.amount)}).`;
+      hint.textContent = `Shared price (${formatINR(match.amount)}) — you can change it; the new amount applies to every record with this Bulty No.`;
     } else {
       amountInput.disabled = false;
       if (hint) hint.remove();
@@ -976,7 +975,7 @@ function saveRecordFromModal() {
   data.isRelocation = document.getElementById("rf_isRelocation").checked;
 
   const bultyMatch = findMatchingBultyRecord(data.bultyNo, APP.editingRecordId);
-  if (bultyMatch) data.amount = bultyMatch.amount;
+  // shared bilty: the amount typed here becomes the shared price (applied after save)
 
   const dupInvoices = findDuplicateInvoiceNumbers(data.invNo, APP.editingRecordId, data.isRelocation);
   if (dupInvoices.length) {
@@ -1004,6 +1003,7 @@ function saveRecordFromModal() {
     });
     showToast("Record added successfully.", "success");
   }
+  applySharedBultyAmount(data.bultyNo, data.amount, APP.editingRecordId || (APP.records[APP.records.length - 1] || {}).id);
   saveRecords();
   renderMasterOptions();
   closeModal("modalRecord");
@@ -3252,4 +3252,45 @@ function refreshPartyList() {
 const __openRecordModalOrig = openRecordModal;
 openRecordModal = function () { refreshPartyList(); return __openRecordModalOrig.apply(this, arguments); };
 const __openCargoEntryModalOrig = openCargoEntryModal;
-openCargoEntryModal = function () { refreshPartyList(); return __openCargoEntryModalOrig.apply(this, arguments); };
+openCargoEntryModal = function () { refreshPartyList(); return __openCargoEntryModalOrig.apply(this, arguments); };
+
+
+// ===== Cargo Entry: block duplicate Inv. No. =====
+function findCargoDuplicateInvoices(invNoString, excludeId) {
+  const existing = new Set();
+  APP.cargoEntries.forEach(e => {
+    if (e.id === excludeId) return;
+    String(e.invNo || "").split(",").forEach(t => { t = t.trim().toUpperCase(); if (t) existing.add(t); });
+  });
+  const seen = new Set(), dupes = [];
+  String(invNoString || "").split(",").map(t => t.trim()).filter(Boolean).forEach(t => {
+    const k = t.toUpperCase();
+    if (existing.has(k) || seen.has(k)) dupes.push(t);
+    seen.add(k);
+  });
+  return dupes;
+}
+const __saveCargoEntryFromModalOrig = saveCargoEntryFromModal;
+saveCargoEntryFromModal = function () {
+  const el = document.getElementById("ceInvNo");
+  const dupes = findCargoDuplicateInvoices(el.value, APP.editingCargoEntryId);
+  if (dupes.length) {
+    showToast(`Invoice No. "${dupes.join(", ")}" already exists in Cargo Entry. Please use a unique invoice number.`, "error");
+    el.focus();
+    return;
+  }
+  return __saveCargoEntryFromModalOrig.apply(this, arguments);
+};
+
+// Shared bilty: one Bulty No = one price. Changing the amount on one record updates the rest.
+function applySharedBultyAmount(bultyNo, amount, exceptId) {
+  const key = String(bultyNo || "").trim().toLowerCase();
+  if (!key) return;
+  APP.records.forEach(r => {
+    if (r.id === exceptId) return;
+    if (String(r.bultyNo || "").trim().toLowerCase() !== key) return;
+    if (toNum(r.amount) === toNum(amount)) return;
+    r.amount = toNum(amount);
+    syncRecordFieldToExport(r, "amount");
+  });
+}
