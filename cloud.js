@@ -38,7 +38,7 @@
   function hideBanner() { if (banner) { banner.remove(); banner = null; } }
 
   /* ---------- access key ---------- */
-  function getKey() { return origGet.call(localStorage, "btd_apikey") || ""; }
+  function getKey() { return BASE === "" ? "via-proxy" : (origGet.call(localStorage, "btd_apikey") || ""); }
   function askKey(msg) {
     var k = window.prompt(msg || "Enter the access key given by your admin:");
     if (k) origSet.call(localStorage, "btd_apikey", k.trim());
@@ -74,7 +74,7 @@
   function initialPull() {
     var res, tries = 0;
     while (true) {
-      if (!getKey() && !askKey()) { readOnly = true; return; }
+      if (BASE !== "" && !getKey() && !askKey()) { readOnly = true; return; }
       res = syncReq("GET", BASE + "/api/kv");
       if (res.status === 401 && tries < 3) { origRem.call(localStorage, "btd_apikey"); tries++; if (!askKey("Wrong key. Enter the access key again:")) { readOnly = true; return; } continue; }
       break;
