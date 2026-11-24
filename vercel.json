@@ -1,1 +1,20 @@
-{}
+{
+  "rewrites": [
+    {
+      "source": "/api/kv/:key",
+      "destination": "/api/proxy?p=kv/:key"
+    },
+    {
+      "source": "/api/kv",
+      "destination": "/api/proxy?p=kv"
+    },
+    {
+      "source": "/api/versions",
+      "destination": "/api/proxy?p=versions"
+    },
+    {
+      "source": "/api/backup",
+      "destination": "/api/proxy?p=backup"
+    }
+  ]
+}
