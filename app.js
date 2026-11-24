@@ -561,7 +561,7 @@ function renderDispatchTable() {
       const key = (rows[i].bultyNo || "").trim().toLowerCase();
       let j = i + 1;
       if (key) while (j < rows.length && (rows[j].bultyNo || "").trim().toLowerCase() === key) j++;
-      if (j - i > 1) { amtSpan[i] = j - i; for (let k = i + 1; k < j; k++) amtSkip.add(k); }
+      // BILTY-SEPARATE: amount cells are no longer merged
       i = j;
     }
     // Consecutive rows exported together (same Export No.) share ONE merged Charges cell
@@ -733,7 +733,7 @@ function startCellEdit(td, record, field, type) {
     if (field === "amount") applySharedBultyAmount(record.bultyNo, toNum(record.amount), record.id);
     if (field === "bultyNo") {
       const match = findMatchingBultyRecord(val, record.id);
-      if (match && toNum(record.amount) !== toNum(match.amount)) {
+      if (false && match) { // BILTY-SEPARATE: keep the record's own amount
         record.amount = match.amount;
         showToast(`Amount auto-set to ${formatINR(match.amount)} to match other records sharing Bulty No. "${val}".`, "success");
       }
@@ -888,7 +888,7 @@ function setupBultyAmountLock() {
     const match = findMatchingBultyRecord(bultyInput.value, APP.editingRecordId);
     let hint = document.getElementById("bultyAmountHint");
     if (match) {
-      amountInput.value = match.amount;
+      if (refresh.initDone && !toNum(amountInput.value)) amountInput.value = match.amount; // only pre-fill an empty amount
       amountInput.disabled = false;
       if (!hint) {
         hint = document.createElement("p");
@@ -896,7 +896,7 @@ function setupBultyAmountLock() {
         hint.className = "field-hint";
         amountInput.closest(".field").appendChild(hint);
       }
-      hint.textContent = `Shared price (${formatINR(match.amount)}) — you can change it; the new amount applies to every record with this Bulty No.`;
+      hint.textContent = `Same Bulty No. as another record (${formatINR(match.amount)}). The amount here is for this record only.`;
     } else {
       amountInput.disabled = false;
       if (hint) hint.remove();
@@ -904,6 +904,7 @@ function setupBultyAmountLock() {
   }
   bultyInput.addEventListener("input", refresh);
   refresh();
+  refresh.initDone = true;
 }
 
 function fieldHTML(f, record) {
@@ -1078,7 +1079,7 @@ function computeExportBatch(candidateRows, limit) {
   for (let i = 0; i < eligible.length; i++) {
     // a shared bilty's price counts once, so later records on the same bilty add 0
     const bKey = (eligible[i].bultyNo || "").trim().toLowerCase();
-    const amt = (bKey && seenBulty.has(bKey)) ? 0 : toNum(eligible[i].amount);
+    const amt = toNum(eligible[i].amount); // BILTY-SEPARATE
     if (running + amt <= limit) {
       running += amt;
       if (bKey) seenBulty.add(bKey);
@@ -1242,9 +1243,7 @@ function computeDedupedAmount(rows) {
   const seenBulty = new Set();
   rows.forEach(r => {
     const key = (r.bultyNo || "").trim().toLowerCase();
-    if (key && seenBulty.has(key)) return;
-    if (key) seenBulty.add(key);
-    total += toNum(r.amount);
+    total += toNum(r.amount); // BILTY-SEPARATE: every record counts
   });
   return total;
 }
@@ -1568,7 +1567,7 @@ function buildReportHTML(d) {
     if (key) while (j < d.rows.length && (d.rows[j].bultyNo || "").trim() === key) j++;
     const span = j - i;
     if (span > 1) {
-      groupStartAt[i] = { span, groupAmount: toNum(d.rows[i].amount) };
+      groupStartAt[i] = { span, groupAmount: d.rows.slice(i, j).reduce((s, x) => s + toNum(x.amount), 0) };
       for (let k = i + 1; k < j; k++) groupSkip.add(k);
     }
     i = j;
@@ -3415,4 +3414,1017 @@ renderCargoPage = function () {
     updateCargoRepBar();
   }
   return r;
+};
+
+
+// =========================================================
+// LOGIN / ROLES / PROFILE
+// Data Entry: everything, but records older than 24 hrs are locked.
+// Admin: everything, no lock, and can unlock Data Entry users.
+// NOTE: data lives in this browser (localStorage), so this is an access
+// gate for normal use — not protection against someone using DevTools.
+// =========================================================
+const AUTH = { USERS_KEY: "btd_users", SESSION_KEY: "btd_session", LOCK_MS: 24 * 60 * 60 * 1000, mode: "login", role: "entry" };
+
+function authUsers() { return Store.get(AUTH.USERS_KEY, []); }
+function authSaveUsers(list) { Store.set(AUTH.USERS_KEY, list); }
+function authSessionId() {
+  try { return sessionStorage.getItem(AUTH.SESSION_KEY) || localStorage.getItem(AUTH.SESSION_KEY); } catch (e) { return null; }
+}
+function authCurrent() {
+  const id = authSessionId();
+  return id ? (authUsers().find(u => u.id === id && u.active !== false) || null) : null;
+}
+function authIsAdmin() { const u = authCurrent(); return !!u && u.role === "admin"; }
+
+function authCyrb(s) {
+  let h1 = 0xdeadbeef, h2 = 0x41c6ce57;
+  for (let i = 0; i < s.length; i++) { const c = s.charCodeAt(i); h1 = Math.imul(h1 ^ c, 2654435761); h2 = Math.imul(h2 ^ c, 1597334677); }
+  h1 = Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^ Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 = Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^ Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0)).toString(16);
+}
+async function authHash(pw, salt, kind) {
+  const s = salt + ":" + pw;
+  if (kind === "s2" && window.crypto && crypto.subtle) {
+    const buf = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(s));
+    return "s2:" + [...new Uint8Array(buf)].map(b => b.toString(16).padStart(2, "0")).join("");
+  }
+  return "c1:" + authCyrb(s);
+}
+async function authMakeUser(name, username, password, role) {
+  const salt = uid("s");
+  const kind = (window.crypto && crypto.subtle) ? "s2" : "c1";
+  return {
+    id: uid("usr"), name, username: username.toLowerCase(), role, salt,
+    hash: await authHash(password, salt, kind), active: true,
+    canEditOld: false, unlockRequested: false, createdAt: Date.now(),
+  };
+}
+async function authCheckPassword(user, pw) {
+  const kind = String(user.hash).startsWith("s2:") ? "s2" : "c1";
+  return (await authHash(pw, user.salt, kind)) === user.hash;
+}
+
+// ---------- 24-hour lock ----------
+function authLocked(item) {
+  const u = authCurrent();
+  if (!u) return true;
+  if (u.role === "admin" || u.canEditOld) return false;
+  if (!item || !item.createdAt) return false;
+  return Date.now() - item.createdAt > AUTH.LOCK_MS;
+}
+const AUTH_LOCK_MSG = "Locked — records can't be changed after 24 hours. Ask an Admin to unlock your account (Profile → Request edit access).";
+
+function authLookup(t) {
+  let tr;
+  if (t.closest(".chg-amt")) {
+    const el = t.closest(".chg-amt");
+    return APP.exports.find(x => Number(x.exportNo) === Number(el.dataset.export)) || null;
+  }
+  if ((tr = t.closest("#sheetBody tr"))) {
+    const a = t.closest("[data-action]");
+    if (t.closest("td.editable-cell") || (a && (a.dataset.action === "edit" || a.dataset.action === "delete")))
+      return APP.records.find(r => r.id === tr.dataset.id) || null;
+    return null;
+  }
+  if ((tr = t.closest("#cargoRows tr"))) {
+    const a = t.closest("[data-action]");
+    if (a && (a.dataset.action === "edit" || a.dataset.action === "delete"))
+      return APP.cargoEntries.find(x => x.id === tr.dataset.id) || null;
+    return null;
+  }
+  if ((tr = t.closest("#expenseBody tr"))) {
+    if (t.closest('[data-action="delete-expense"]')) return APP.expenses.find(x => x.id === tr.dataset.id) || null;
+    return null;
+  }
+  if ((tr = t.closest("#cargoReportsBody tr"))) {
+    if (t.closest('[data-action="delete-report"]')) return APP.cargoReports.find(r => r.id === tr.dataset.rid) || null;
+    return null;
+  }
+  if (t.closest("#exportRegisterBody td.editable-cell")) {
+    const td = t.closest("td.editable-cell");
+    return APP.exports.find(x => x.exportNo === Number(td.dataset.export)) || null;
+  }
+  if (t.closest("#btnSaveReportComment")) {
+    if (APP.viewingExportNo) return APP.exports.find(e => e.exportNo === APP.viewingExportNo) || null;
+    if (APP.viewingCargoReportId) return APP.cargoReports.find(r => r.id === APP.viewingCargoReportId) || null;
+  }
+  return null;
+}
+document.addEventListener("click", function (e) {
+  if (!e.target.closest) return;
+  const item = authLookup(e.target);
+  if (item && authLocked(item)) {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    showToast(AUTH_LOCK_MSG, "error");
+  }
+}, true);
+
+function applyLockMarks() {
+  document.querySelectorAll("#sheetBody tr[data-id]").forEach(tr => {
+    const r = APP.records.find(x => x.id === tr.dataset.id);
+    tr.classList.toggle("row-locked", !!r && authLocked(r));
+  });
+  document.querySelectorAll("#cargoRows tr[data-id]").forEach(tr => {
+    const r = APP.cargoEntries.find(x => x.id === tr.dataset.id);
+    tr.classList.toggle("row-locked", !!r && authLocked(r));
+  });
+  document.querySelectorAll("#expenseBody tr[data-id]").forEach(tr => {
+    const r = APP.expenses.find(x => x.id === tr.dataset.id);
+    const locked = !!r && authLocked(r);
+    tr.classList.toggle("row-locked", locked);
+    tr.querySelectorAll("input, select").forEach(el => { el.disabled = locked; });
+  });
+}
+["renderDispatchTable", "renderCargoPage", "renderExpenseTable"].forEach(name => {
+  const orig = window[name] || eval(name);
+  const wrapped = function () { const r = orig.apply(this, arguments); applyLockMarks(); return r; };
+  eval(name + " = wrapped");
+});
+
+// ---------- created-at stamps (needed for the 24-hour rule) ----------
+function authStamp(list) { let ch = false; list.forEach(x => { if (x && !x.createdAt) { x.createdAt = Date.now(); ch = true; } }); return ch; }
+const __sRec = saveRecords; saveRecords = function () { authStamp(APP.records); return __sRec.apply(this, arguments); };
+const __sCE = saveCargoEntries; saveCargoEntries = function () { authStamp(APP.cargoEntries); return __sCE.apply(this, arguments); };
+const __sExp = saveExpenses; saveExpenses = function () { authStamp(APP.expenses); return __sExp.apply(this, arguments); };
+const __sExs = saveExports; saveExports = function () { authStamp(APP.exports); return __sExs.apply(this, arguments); };
+const __sCR = saveCargoReports; saveCargoReports = function () { authStamp(APP.cargoReports); return __sCR.apply(this, arguments); };
+
+// A duplicated row is a NEW row — it must start its own 24 hours.
+function authWrapDuplicate(fnName, getList, save) {
+  const orig = eval(fnName);
+  const w = function () {
+    const before = new Set(getList().map(x => x.id));
+    const r = orig.apply(this, arguments);
+    let ch = false;
+    getList().forEach(x => { if (!before.has(x.id)) { x.createdAt = Date.now(); ch = true; } });
+    if (ch) save();
+    return r;
+  };
+  eval(fnName + " = w");
+}
+authWrapDuplicate("duplicateRecord", () => APP.records, () => saveRecords());
+if (typeof duplicateCargoEntry === "function") authWrapDuplicate("duplicateCargoEntry", () => APP.cargoEntries, () => saveCargoEntries());
+
+document.addEventListener("DOMContentLoaded", () => {
+  // Existing data from before login was added: give it a fresh 24 hours once.
+  const need = [APP.records, APP.cargoEntries, APP.expenses, APP.exports, APP.cargoReports].some(l => l.some(x => !x.createdAt));
+  if (need) { saveRecords(); saveCargoEntries(); saveExpenses(); saveExports(); saveCargoReports(); }
+  if (authCurrent()) authApplyUI(); else authShow();
+});
+
+// ---------- Login screen ----------
+function authBuildOverlay() {
+  const el = document.createElement("div");
+  el.id = "authOverlay";
+  el.className = "auth-overlay";
+  el.hidden = true;
+  el.innerHTML = `
+  <div class="auth-card">
+    <div class="auth-side">
+      <span class="auth-circle auth-c1"></span><span class="auth-circle auth-c2"></span><span class="auth-circle auth-c3"></span>
+      <div class="auth-welcome">
+        <h2>WELCOME</h2>
+        <p>Book Transport &amp; Dispatch Management</p>
+        <small>Book Publication &amp; Distribution System</small>
+      </div>
+    </div>
+    <div class="auth-main">
+      <h1 id="authTitle">Sign in</h1>
+      <p class="auth-sub" id="authSub">Choose your login type and enter your details.</p>
+      <div class="auth-tabs" id="authTabs">
+        <button type="button" data-role="entry" class="active">Data Entry Login</button>
+        <button type="button" data-role="admin">Admin Login</button>
+      </div>
+      <form id="authForm" autocomplete="off">
+        <div class="auth-field" id="authNameWrap" hidden><label for="authName">Full name</label><input id="authName" type="text"></div>
+        <div class="auth-field"><label for="authUser">Username</label><input id="authUser" type="text" autocapitalize="none" spellcheck="false"></div>
+        <div class="auth-field"><label for="authPass">Password</label><input id="authPass" type="password"></div>
+        <div class="auth-field" id="authConfirmWrap" hidden><label for="authPass2">Confirm password</label><input id="authPass2" type="password"></div>
+        <label class="auth-remember" id="authRememberWrap"><input type="checkbox" id="authRemember"> Keep me signed in on this computer</label>
+        <div class="auth-error" id="authError" role="alert"></div>
+        <button type="submit" class="auth-btn" id="authSubmit">Sign in</button>
+      </form>
+    </div>
+  </div>`;
+  document.body.appendChild(el);
+
+  el.querySelector("#authTabs").addEventListener("click", (e) => {
+    const b = e.target.closest("button[data-role]");
+    if (!b) return;
+    AUTH.role = b.dataset.role;
+    authRenderMode();
+  });
+  el.querySelector("#authForm").addEventListener("submit", authSubmit);
+  return el;
+}
+function authRenderMode() {
+  const setup = authUsers().length === 0;
+  AUTH.mode = setup ? "setup" : "login";
+  document.getElementById("authTitle").textContent = setup ? "Create Admin account" : "Sign in";
+  document.getElementById("authSub").textContent = setup
+    ? "First time here. Create the Admin account — you can add Data Entry users later from Profile."
+    : (AUTH.role === "admin" ? "Admin login — full access, can unlock records." : "Data Entry login — records lock 24 hours after they are created.");
+  document.getElementById("authTabs").hidden = setup;
+  document.getElementById("authNameWrap").hidden = !setup;
+  document.getElementById("authConfirmWrap").hidden = !setup;
+  document.getElementById("authSubmit").textContent = setup ? "Create Admin & Sign in" : "Sign in";
+  document.querySelectorAll("#authTabs button").forEach(b => b.classList.toggle("active", b.dataset.role === AUTH.role));
+  document.getElementById("authError").textContent = "";
+}
+function authShow() {
+  const el = document.getElementById("authOverlay") || authBuildOverlay();
+  el.hidden = false;
+  document.body.classList.add("auth-locked");
+  authRenderMode();
+  document.getElementById("authForm").reset();
+  setTimeout(() => { const f = document.getElementById(AUTH.mode === "setup" ? "authName" : "authUser"); if (f) f.focus(); }, 30);
+}
+function authSetError(msg) { document.getElementById("authError").textContent = msg; }
+
+async function authSubmit(e) {
+  e.preventDefault();
+  const username = document.getElementById("authUser").value.trim().toLowerCase();
+  const pw = document.getElementById("authPass").value;
+  const remember = document.getElementById("authRemember").checked;
+  authSetError("");
+  if (AUTH.mode === "setup") {
+    const name = document.getElementById("authName").value.trim();
+    const pw2 = document.getElementById("authPass2").value;
+    if (!name) return authSetError("Please enter your name.");
+    if (username.length < 3) return authSetError("Username must be at least 3 characters.");
+    if (pw.length < 4) return authSetError("Password must be at least 4 characters.");
+    if (pw !== pw2) return authSetError("Passwords do not match.");
+    const admin = await authMakeUser(name, username, pw, "admin");
+    authSaveUsers([admin]);
+    return authFinishLogin(admin, remember);
+  }
+  const user = authUsers().find(u => u.username === username);
+  if (!user || !(await authCheckPassword(user, pw))) return authSetError("Incorrect username or password.");
+  if (user.active === false) return authSetError("This account is disabled. Please contact the Admin.");
+  if (user.role !== AUTH.role) {
+    return authSetError(user.role === "admin" ? "This is an Admin account — use the Admin Login tab." : "This is a Data Entry account — use the Data Entry Login tab.");
+  }
+  authFinishLogin(user, remember);
+}
+function authFinishLogin(user, remember) {
+  try {
+    sessionStorage.removeItem(AUTH.SESSION_KEY); localStorage.removeItem(AUTH.SESSION_KEY);
+    (remember ? localStorage : sessionStorage).setItem(AUTH.SESSION_KEY, user.id);
+  } catch (err) { }
+  document.getElementById("authOverlay").hidden = true;
+  document.body.classList.remove("auth-locked");
+  authApplyUI();
+  showPage("dashboard");
+}
+function authLogout() {
+  try { sessionStorage.removeItem(AUTH.SESSION_KEY); localStorage.removeItem(AUTH.SESSION_KEY); } catch (e) { }
+  location.reload();
+}
+
+// ---------- Top bar chip, nav item, role-based bits ----------
+(function authBuildShell() {
+  const bar = document.querySelector(".topbar");
+  if (bar && !document.getElementById("userChip")) {
+    const chip = document.createElement("div");
+    chip.className = "user-chip"; chip.id = "userChip"; chip.hidden = true;
+    chip.innerHTML = '<span class="user-chip-text" id="userChipText"></span><button type="button" class="btn btn-secondary btn-sm" id="btnLogoutTop">Logout</button>';
+    bar.appendChild(chip);
+    chip.querySelector("#btnLogoutTop").addEventListener("click", authLogout);
+  }
+  const nav = document.querySelector("#sidebar .nav");
+  if (nav && !document.querySelector('.nav-item[data-page="profile"]')) {
+    const b = document.createElement("button");
+    b.className = "nav-item"; b.dataset.page = "profile";
+    b.innerHTML = '<svg viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg><span>Profile</span>';
+    nav.appendChild(b);
+  }
+  const content = document.getElementById("content");
+  if (content && !document.getElementById("page-profile")) {
+    const sec = document.createElement("section");
+    sec.className = "page"; sec.id = "page-profile";
+    content.appendChild(sec);
+    sec.addEventListener("click", authProfileClick);
+  }
+})();
+
+function authApplyUI() {
+  const u = authCurrent();
+  if (!u) return;
+  const chip = document.getElementById("userChip");
+  chip.hidden = false;
+  document.getElementById("userChipText").innerHTML = `${escapeHtml(u.name)} <span class="role-badge ${u.role}">${u.role === "admin" ? "Admin" : "Data Entry"}</span>`;
+  const danger = document.getElementById("btnResetApp");
+  if (danger) { const p = danger.closest(".panel"); if (p) p.hidden = u.role !== "admin"; }
+  authRenderProfile();
+  applyLockMarks();
+}
+const __showPageForAuth = showPage;
+showPage = function (name) {
+  if (!authCurrent()) return;
+  const r = __showPageForAuth.apply(this, arguments);
+  if (name === "profile") authRenderProfile();
+  return r;
 };
+
+// ---------- Profile page ----------
+function authRenderProfile() {
+  const sec = document.getElementById("page-profile");
+  const u = authCurrent();
+  if (!sec || !u) return;
+  const admin = u.role === "admin";
+  let html = `
+  <div class="page-head"><div><h1>Profile</h1><p class="page-desc">Your account${admin ? " and user management" : ""}.</p></div></div>
+  <div class="panel settings-panel">
+    <div class="profile-top">
+      <div class="profile-avatar">${escapeHtml((u.name || "?").trim().charAt(0).toUpperCase())}</div>
+      <div><div class="profile-name">${escapeHtml(u.name)}</div>
+        <div class="profile-meta">@${escapeHtml(u.username)} · <span class="role-badge ${u.role}">${admin ? "Admin" : "Data Entry"}</span></div></div>
+      <button type="button" class="btn btn-secondary profile-logout" data-act="logout">Logout</button>
+    </div>
+    ${admin ? `<p class="field-hint">Admin: no 24-hour lock. You can unlock Data Entry users below.</p>` :
+      (u.canEditOld
+        ? `<p class="field-hint"><strong>Old-record editing is unlocked</strong> for your account by an Admin.</p>`
+        : `<p class="field-hint">Records you create can be edited or deleted for 24 hours. After that they are locked.</p>
+           <button type="button" class="btn btn-secondary btn-sm" data-act="request" ${u.unlockRequested ? "disabled" : ""}>${u.unlockRequested ? "Request sent to Admin" : "Request edit access"}</button>`)}
+    <div class="field-grid profile-form">
+      <div class="field"><label for="pfName">Display name</label><input type="text" id="pfName" value="${escapeHtml(u.name)}"></div>
+      <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-primary" data-act="save-name">Save name</button></div>
+    </div>
+    <h3 class="profile-sub">Change password</h3>
+    <div class="field-grid profile-form">
+      <div class="field"><label for="pfOld">Current password</label><input type="password" id="pfOld"></div>
+      <div class="field"><label for="pfNew">New password</label><input type="password" id="pfNew"></div>
+      <div class="field"><label for="pfNew2">Confirm new password</label><input type="password" id="pfNew2"></div>
+      <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-primary" data-act="change-pw">Change password</button></div>
+    </div>
+  </div>`;
+  if (admin) {
+    const users = authUsers();
+    html += `
+  <div class="panel settings-panel">
+    <h2 class="profile-sub" style="margin-top:0">Users</h2>
+    <div class="table-scroll"><table class="sheet-table"><thead><tr>
+      <th>NAME</th><th>USERNAME</th><th>ROLE</th><th>STATUS</th><th>EDIT OLD RECORDS</th><th class="col-actions">ACTIONS</th></tr></thead><tbody>
+      ${users.map(x => {
+        const self = x.id === u.id;
+        return `<tr data-uid="${x.id}">
+          <td>${escapeHtml(x.name)}${self ? " <em>(you)</em>" : ""}</td>
+          <td>${escapeHtml(x.username)}</td>
+          <td><span class="role-badge ${x.role}">${x.role === "admin" ? "Admin" : "Data Entry"}</span></td>
+          <td>${x.active === false ? "Disabled" : "Active"}</td>
+          <td>${x.role === "admin" ? "Always" : `<button type="button" class="btn btn-secondary btn-sm" data-act="toggle-old">${x.canEditOld ? "Unlocked — click to lock" : "Locked — click to unlock"}</button>${x.unlockRequested && !x.canEditOld ? ' <span class="badge-shared">requested</span>' : ""}`}</td>
+          <td class="col-actions"><div class="cell-actions">
+            <button type="button" class="btn btn-secondary btn-sm" data-act="reset-pw">Reset password</button>
+            ${self ? "" : `<button type="button" class="btn btn-secondary btn-sm" data-act="toggle-active">${x.active === false ? "Enable" : "Disable"}</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-act="delete-user">Delete</button>`}
+          </div></td></tr>`;
+      }).join("")}
+    </tbody></table></div>
+    <h3 class="profile-sub">Add user</h3>
+    <div class="field-grid profile-form">
+      <div class="field"><label for="nuName">Full name</label><input type="text" id="nuName"></div>
+      <div class="field"><label for="nuUser">Username</label><input type="text" id="nuUser" autocapitalize="none"></div>
+      <div class="field"><label for="nuPass">Password</label><input type="password" id="nuPass"></div>
+      <div class="field"><label for="nuRole">Login type</label><select id="nuRole"><option value="entry">Data Entry</option><option value="admin">Admin</option></select></div>
+      <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-primary" data-act="add-user">Add user</button></div>
+    </div>
+  </div>`;
+  }
+  sec.innerHTML = html;
+}
+
+function authUpdateUser(id, fn) {
+  const list = authUsers();
+  const x = list.find(u => u.id === id);
+  if (!x) return null;
+  fn(x);
+  authSaveUsers(list);
+  return x;
+}
+async function authProfileClick(e) {
+  const b = e.target.closest("[data-act]");
+  if (!b) return;
+  const act = b.dataset.act;
+  const me = authCurrent();
+  if (!me) return;
+  const val = id => document.getElementById(id).value;
+  const rowId = () => b.closest("tr") && b.closest("tr").dataset.uid;
+
+  if (act === "logout") return authLogout();
+  if (act === "request") {
+    authUpdateUser(me.id, x => { x.unlockRequested = true; });
+    showToast("Request sent to the Admin.", "success");
+    return authRenderProfile();
+  }
+  if (act === "save-name") {
+    const n = val("pfName").trim();
+    if (!n) return showToast("Name can't be empty.", "error");
+    authUpdateUser(me.id, x => { x.name = n; });
+    showToast("Name updated.", "success");
+    return authApplyUI();
+  }
+  if (act === "change-pw") {
+    const o = val("pfOld"), n = val("pfNew"), n2 = val("pfNew2");
+    if (!(await authCheckPassword(me, o))) return showToast("Current password is wrong.", "error");
+    if (n.length < 4) return showToast("New password must be at least 4 characters.", "error");
+    if (n !== n2) return showToast("New passwords do not match.", "error");
+    const fresh = await authMakeUser(me.name, me.username, n, me.role);
+    authUpdateUser(me.id, x => { x.salt = fresh.salt; x.hash = fresh.hash; });
+    showToast("Password changed.", "success");
+    return authRenderProfile();
+  }
+  if (!authIsAdmin()) return;
+  if (act === "toggle-old") {
+    authUpdateUser(rowId(), x => { x.canEditOld = !x.canEditOld; x.unlockRequested = false; });
+    return authRenderProfile();
+  }
+  if (act === "toggle-active") {
+    authUpdateUser(rowId(), x => { x.active = x.active === false; });
+    return authRenderProfile();
+  }
+  if (act === "reset-pw") {
+    const target = authUsers().find(x => x.id === rowId());
+    const p = prompt(`New password for ${target.name} (min 4 characters):`);
+    if (p === null) return;
+    if (p.length < 4) return showToast("Password must be at least 4 characters.", "error");
+    const fresh = await authMakeUser(target.name, target.username, p, target.role);
+    authUpdateUser(target.id, x => { x.salt = fresh.salt; x.hash = fresh.hash; });
+    return showToast("Password reset.", "success");
+  }
+  if (act === "delete-user") {
+    const target = authUsers().find(x => x.id === rowId());
+    if (!confirm(`Delete user "${target.name}"? Their records stay.`)) return;
+    authSaveUsers(authUsers().filter(x => x.id !== target.id));
+    return authRenderProfile();
+  }
+  if (act === "add-user") {
+    const name = val("nuName").trim(), un = val("nuUser").trim().toLowerCase(), pw = val("nuPass"), role = val("nuRole");
+    if (!name) return showToast("Enter the user's name.", "error");
+    if (un.length < 3) return showToast("Username must be at least 3 characters.", "error");
+    if (pw.length < 4) return showToast("Password must be at least 4 characters.", "error");
+    if (authUsers().some(x => x.username === un)) return showToast("That username is already taken.", "error");
+    const nu = await authMakeUser(name, un, pw, role);
+    authSaveUsers(authUsers().concat(nu));
+    showToast("User added.", "success");
+    return authRenderProfile();
+  }
+}
+
+// Show the login screen right away (before the app paints) unless already signed in.
+if (!authCurrent()) { authBuildOverlay(); authShow(); }
+
+
+// ===== Three logins: Super Admin / Admin / Data Entry =====
+// Super Admin: everything, manages all users.
+// Admin: no 24-hour lock, can unlock Data Entry users. Cannot see Super Admin, cannot add/edit/delete users.
+// Data Entry: 24-hour lock.
+const AUTH_ROLE_NAMES = { entry: "Data Entry", admin: "Admin", super: "Super Admin" };
+function authRole() { const u = authCurrent(); return u ? u.role : null; }
+function authIsSuper() { return authRole() === "super"; }
+function authIsAdmin() { const r = authRole(); return r === "admin" || r === "super"; }
+
+// Existing installs: the oldest Admin account becomes the Super Admin (change roles later in Profile).
+(function authMigrateSuper() {
+  const list = authUsers();
+  if (!list.length || list.some(u => u.role === "super")) return;
+  const first = list.filter(u => u.role === "admin").sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))[0];
+  if (first) { first.role = "super"; authSaveUsers(list); }
+})();
+
+authLocked = function (item) {
+  const u = authCurrent();
+  if (!u) return true;
+  if (u.role === "admin" || u.role === "super" || u.canEditOld) return false;
+  if (!item || !item.createdAt) return false;
+  return Date.now() - item.createdAt > AUTH.LOCK_MS;
+};
+
+authRenderMode = function () {
+  const setup = authUsers().length === 0;
+  AUTH.mode = setup ? "setup" : "login";
+  const tabs = document.getElementById("authTabs");
+  if (tabs && !tabs.querySelector('[data-role="super"]')) {
+    const b = document.createElement("button");
+    b.type = "button"; b.dataset.role = "super"; b.textContent = "Super Admin";
+    tabs.appendChild(b);
+  }
+  const tb = tabs.querySelectorAll("button");
+  if (tb[0]) tb[0].textContent = "Data Entry";
+  if (tb[1]) tb[1].textContent = "Admin";
+  document.getElementById("authTitle").textContent = setup ? "Create Super Admin account" : "Sign in";
+  const subs = {
+    entry: "Data Entry login — records lock 24 hours after they are created.",
+    admin: "Admin login — no lock, can give Data Entry users edit access.",
+    super: "Super Admin login — full access and user management.",
+  };
+  document.getElementById("authSub").textContent = setup
+    ? "First time here. Create the Super Admin account — you can add other users later from Profile."
+    : subs[AUTH.role];
+  tabs.hidden = setup;
+  document.getElementById("authNameWrap").hidden = !setup;
+  document.getElementById("authConfirmWrap").hidden = !setup;
+  document.getElementById("authSubmit").textContent = setup ? "Create Super Admin & Sign in" : "Sign in";
+  tabs.querySelectorAll("button").forEach(b => b.classList.toggle("active", b.dataset.role === AUTH.role));
+  document.getElementById("authError").textContent = "";
+};
+
+async function authSubmitV2(e) {
+  const username = document.getElementById("authUser").value.trim().toLowerCase();
+  const pw = document.getElementById("authPass").value;
+  const remember = document.getElementById("authRemember").checked;
+  authSetError("");
+  if (AUTH.mode === "setup") {
+    const name = document.getElementById("authName").value.trim();
+    const pw2 = document.getElementById("authPass2").value;
+    if (!name) return authSetError("Please enter your name.");
+    if (username.length < 3) return authSetError("Username must be at least 3 characters.");
+    if (pw.length < 4) return authSetError("Password must be at least 4 characters.");
+    if (pw !== pw2) return authSetError("Passwords do not match.");
+    const boss = await authMakeUser(name, username, pw, "super");
+    authSaveUsers([boss]);
+    return authFinishLogin(boss, remember);
+  }
+  const user = authUsers().find(u => u.username === username);
+  if (!user || !(await authCheckPassword(user, pw))) return authSetError("Incorrect username or password.");
+  if (user.active === false) return authSetError("This account is disabled. Please contact the Super Admin.");
+  if (user.role !== AUTH.role) {
+    const n = AUTH_ROLE_NAMES[user.role];
+    return authSetError(`This is a ${n} account — use the ${n} tab.`);
+  }
+  authFinishLogin(user, remember);
+}
+document.addEventListener("submit", function (e) {
+  if (e.target && e.target.id === "authForm") {
+    e.stopImmediatePropagation();
+    e.preventDefault();
+    authSubmitV2(e);
+  }
+}, true);
+
+authApplyUI = function () {
+  const u = authCurrent();
+  if (!u) return;
+  document.getElementById("userChip").hidden = false;
+  document.getElementById("userChipText").innerHTML = `${escapeHtml(u.name)} <span class="role-badge ${u.role}">${AUTH_ROLE_NAMES[u.role]}</span>`;
+  const danger = document.getElementById("btnResetApp");
+  if (danger) { const p = danger.closest(".panel"); if (p) p.hidden = u.role !== "super"; }
+  authRenderProfile();
+  applyLockMarks();
+};
+
+authRenderProfile = function () {
+  const sec = document.getElementById("page-profile");
+  const u = authCurrent();
+  if (!sec || !u) return;
+  const staff = u.role !== "entry";
+  const sup = u.role === "super";
+  const badge = r => `<span class="role-badge ${r}">${AUTH_ROLE_NAMES[r]}</span>`;
+  let html = `
+  <div class="page-head"><div><h1>Profile</h1><p class="page-desc">Your account${staff ? " and access control" : ""}.</p></div></div>
+  <div class="panel settings-panel">
+    <div class="profile-top">
+      <div class="profile-avatar">${escapeHtml((u.name || "?").trim().charAt(0).toUpperCase())}</div>
+      <div><div class="profile-name">${escapeHtml(u.name)}</div>
+        <div class="profile-meta">@${escapeHtml(u.username)} · ${badge(u.role)}</div></div>
+      <button type="button" class="btn btn-secondary profile-logout" data-act="logout">Logout</button>
+    </div>
+    ${staff ? `<p class="field-hint">${sup ? "Super Admin: full access, no 24-hour lock, manages all users." : "Admin: no 24-hour lock. You can give Data Entry users access to edit old records."}</p>` :
+      (u.canEditOld
+        ? `<p class="field-hint"><strong>Old-record editing is unlocked</strong> for your account.</p>`
+        : `<p class="field-hint">Records you create can be edited or deleted for 24 hours. After that they are locked.</p>
+           <button type="button" class="btn btn-secondary btn-sm" data-act="request" ${u.unlockRequested ? "disabled" : ""}>${u.unlockRequested ? "Request sent" : "Request edit access"}</button>`)}
+    <div class="field-grid profile-form">
+      <div class="field"><label for="pfName">Display name</label><input type="text" id="pfName" value="${escapeHtml(u.name)}"></div>
+      <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-primary" data-act="save-name">Save name</button></div>
+    </div>
+    <h3 class="profile-sub">Change password</h3>
+    <div class="field-grid profile-form">
+      <div class="field"><label for="pfOld">Current password</label><input type="password" id="pfOld"></div>
+      <div class="field"><label for="pfNew">New password</label><input type="password" id="pfNew"></div>
+      <div class="field"><label for="pfNew2">Confirm new password</label><input type="password" id="pfNew2"></div>
+      <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-primary" data-act="change-pw">Change password</button></div>
+    </div>
+  </div>`;
+  const oldCell = x => x.role !== "entry" ? "Always" :
+    `<button type="button" class="btn btn-secondary btn-sm" data-act="toggle-old">${x.canEditOld ? "Unlocked — click to lock" : "Locked — click to unlock"}</button>${x.unlockRequested && !x.canEditOld ? ' <span class="badge-shared">requested</span>' : ""}`;
+  if (sup) {
+    const users = authUsers();
+    html += `
+  <div class="panel settings-panel">
+    <h2 class="profile-sub" style="margin-top:0">Users</h2>
+    <div class="table-scroll"><table class="sheet-table"><thead><tr>
+      <th>NAME</th><th>USERNAME</th><th>ROLE</th><th>STATUS</th><th>EDIT OLD RECORDS</th><th class="col-actions">ACTIONS</th></tr></thead><tbody>
+      ${users.map(x => {
+        const self = x.id === u.id;
+        return `<tr data-uid="${x.id}">
+          <td>${escapeHtml(x.name)}${self ? " <em>(you)</em>" : ""}</td>
+          <td>${escapeHtml(x.username)}</td>
+          <td>${self ? badge(x.role) : `<select data-act="set-role">${["entry", "admin", "super"].map(r => `<option value="${r}" ${x.role === r ? "selected" : ""}>${AUTH_ROLE_NAMES[r]}</option>`).join("")}</select>`}</td>
+          <td>${x.active === false ? "Disabled" : "Active"}</td>
+          <td>${oldCell(x)}</td>
+          <td class="col-actions"><div class="cell-actions">
+            <button type="button" class="btn btn-secondary btn-sm" data-act="reset-pw">Reset password</button>
+            ${self ? "" : `<button type="button" class="btn btn-secondary btn-sm" data-act="toggle-active">${x.active === false ? "Enable" : "Disable"}</button>
+            <button type="button" class="btn btn-secondary btn-sm" data-act="delete-user">Delete</button>`}
+          </div></td></tr>`;
+      }).join("")}
+    </tbody></table></div>
+    <h3 class="profile-sub">Add user</h3>
+    <div class="field-grid profile-form">
+      <div class="field"><label for="nuName">Full name</label><input type="text" id="nuName"></div>
+      <div class="field"><label for="nuUser">Username</label><input type="text" id="nuUser" autocapitalize="none"></div>
+      <div class="field"><label for="nuPass">Password</label><input type="password" id="nuPass"></div>
+      <div class="field"><label for="nuRole">Login type</label><select id="nuRole"><option value="entry">Data Entry</option><option value="admin">Admin</option><option value="super">Super Admin</option></select></div>
+      <div class="field"><label>&nbsp;</label><button type="button" class="btn btn-primary" data-act="add-user">Add user</button></div>
+    </div>
+  </div>`;
+  } else if (u.role === "admin") {
+    const users = authUsers().filter(x => x.role === "entry");
+    html += `
+  <div class="panel settings-panel">
+    <h2 class="profile-sub" style="margin-top:0">Data Entry access</h2>
+    <p class="field-hint">Unlock a Data Entry user so they can edit or delete records older than 24 hours.</p>
+    <div class="table-scroll"><table class="sheet-table"><thead><tr>
+      <th>NAME</th><th>USERNAME</th><th>STATUS</th><th>EDIT OLD RECORDS</th></tr></thead><tbody>
+      ${users.map(x => `<tr data-uid="${x.id}"><td>${escapeHtml(x.name)}</td><td>${escapeHtml(x.username)}</td><td>${x.active === false ? "Disabled" : "Active"}</td><td>${oldCell(x)}</td></tr>`).join("")
+        || '<tr><td colspan="4">No Data Entry users yet.</td></tr>'}
+    </tbody></table></div>
+  </div>`;
+  }
+  sec.innerHTML = html;
+};
+
+async function authProfileClickV2(e) {
+  const b = e.target.closest("[data-act]");
+  if (!b || b.tagName === "SELECT") return;
+  const act = b.dataset.act;
+  const me = authCurrent();
+  if (!me) return;
+  const val = id => document.getElementById(id).value;
+  const rowId = () => b.closest("tr") && b.closest("tr").dataset.uid;
+
+  if (act === "logout") return authLogout();
+  if (act === "request") {
+    authUpdateUser(me.id, x => { x.unlockRequested = true; });
+    showToast("Request sent.", "success");
+    return authRenderProfile();
+  }
+  if (act === "save-name") {
+    const n = val("pfName").trim();
+    if (!n) return showToast("Name can't be empty.", "error");
+    authUpdateUser(me.id, x => { x.name = n; });
+    showToast("Name updated.", "success");
+    return authApplyUI();
+  }
+  if (act === "change-pw") {
+    const o = val("pfOld"), n = val("pfNew"), n2 = val("pfNew2");
+    if (!(await authCheckPassword(me, o))) return showToast("Current password is wrong.", "error");
+    if (n.length < 4) return showToast("New password must be at least 4 characters.", "error");
+    if (n !== n2) return showToast("New passwords do not match.", "error");
+    const fresh = await authMakeUser(me.name, me.username, n, me.role);
+    authUpdateUser(me.id, x => { x.salt = fresh.salt; x.hash = fresh.hash; });
+    showToast("Password changed.", "success");
+    return authRenderProfile();
+  }
+  // Admin AND Super Admin: give / take back access for Data Entry users
+  if (act === "toggle-old") {
+    if (!authIsAdmin()) return;
+    const target = authUsers().find(x => x.id === rowId());
+    if (!target || target.role !== "entry") return;
+    authUpdateUser(target.id, x => { x.canEditOld = !x.canEditOld; x.unlockRequested = false; });
+    return authRenderProfile();
+  }
+  // Everything below: Super Admin only
+  if (!authIsSuper()) return;
+  if (act === "toggle-active") {
+    if (rowId() === me.id) return;
+    authUpdateUser(rowId(), x => { x.active = x.active === false; });
+    return authRenderProfile();
+  }
+  if (act === "reset-pw") {
+    const target = authUsers().find(x => x.id === rowId());
+    const p = prompt(`New password for ${target.name} (min 4 characters):`);
+    if (p === null) return;
+    if (p.length < 4) return showToast("Password must be at least 4 characters.", "error");
+    const fresh = await authMakeUser(target.name, target.username, p, target.role);
+    authUpdateUser(target.id, x => { x.salt = fresh.salt; x.hash = fresh.hash; });
+    return showToast("Password reset.", "success");
+  }
+  if (act === "delete-user") {
+    const target = authUsers().find(x => x.id === rowId());
+    if (!target || target.id === me.id) return;
+    if (!confirm(`Delete user "${target.name}"? Their records stay.`)) return;
+    authSaveUsers(authUsers().filter(x => x.id !== target.id));
+    return authRenderProfile();
+  }
+  if (act === "add-user") {
+    const name = val("nuName").trim(), un = val("nuUser").trim().toLowerCase(), pw = val("nuPass"), role = val("nuRole");
+    if (!name) return showToast("Enter the user's name.", "error");
+    if (un.length < 3) return showToast("Username must be at least 3 characters.", "error");
+    if (pw.length < 4) return showToast("Password must be at least 4 characters.", "error");
+    if (authUsers().some(x => x.username === un)) return showToast("That username is already taken.", "error");
+    const nu = await authMakeUser(name, un, pw, role);
+    authSaveUsers(authUsers().concat(nu));
+    showToast("User added.", "success");
+    return authRenderProfile();
+  }
+}
+(function authHookProfileV2() {
+  const sec = document.getElementById("page-profile");
+  if (!sec || sec.dataset.v2) return;
+  sec.dataset.v2 = "1";
+  // runs before the older click handler and replaces it
+  sec.addEventListener("click", function (e) {
+    if (e.target.closest("[data-act]")) { e.stopImmediatePropagation(); authProfileClickV2(e); }
+  }, true);
+  sec.addEventListener("change", function (e) {
+    const s = e.target.closest('select[data-act="set-role"]');
+    if (!s || !authIsSuper()) return;
+    const id = s.closest("tr").dataset.uid;
+    const me = authCurrent();
+    if (!id || id === me.id) return authRenderProfile();
+    authUpdateUser(id, x => { x.role = s.value; if (s.value !== "entry") { x.canEditOld = false; x.unlockRequested = false; } });
+    showToast("Role updated.", "success");
+    authRenderProfile();
+  });
+})();
+
+// refresh the screen for an already signed-in user
+if (authCurrent()) { try { authApplyUI(); } catch (err) { } }
+
+
+// ===== User card at the bottom of the sidebar (replaces the top-right name + Logout) =====
+(function sidebarUserCard() {
+  const foot = document.querySelector(".sidebar-foot");
+  if (!foot || document.getElementById("sidebarUser")) return;
+  const card = document.createElement("div");
+  card.id = "sidebarUser"; card.className = "sb-user"; card.hidden = true;
+  card.innerHTML =
+    '<button type="button" class="sb-user-main" id="sbUserMain" title="Open profile">' +
+      '<span class="sb-avatar" id="sbAvatar"></span>' +
+      '<span class="sb-user-text"><span class="sb-user-name" id="sbName"></span><span class="sb-user-role" id="sbRole"></span></span>' +
+    '</button>' +
+    '<button type="button" class="sb-logout" id="sbLogout" title="Logout" aria-label="Logout">' +
+      '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>' +
+    '</button>';
+  foot.insertBefore(card, foot.firstChild);
+  card.querySelector("#sbUserMain").addEventListener("click", () => showPage("profile"));
+  card.querySelector("#sbLogout").addEventListener("click", () => authLogout());
+
+  const bar = document.querySelector(".topbar");
+  if (bar && !document.getElementById("topDate")) {
+    const d = document.createElement("div");
+    d.id = "topDate"; d.className = "topbar-date";
+    d.textContent = new Date().toLocaleDateString("en-GB", { weekday: "short", day: "2-digit", month: "short", year: "numeric" });
+    bar.appendChild(d);
+  }
+})();
+
+const __applyUIForSidebar = authApplyUI;
+authApplyUI = function () {
+  const r = __applyUIForSidebar.apply(this, arguments);
+  const u = authCurrent();
+  const card = document.getElementById("sidebarUser");
+  if (u && card) {
+    const names = (typeof AUTH_ROLE_NAMES !== "undefined") ? AUTH_ROLE_NAMES : { admin: "Admin", entry: "Data Entry", super: "Super Admin" };
+    document.getElementById("sbAvatar").textContent = (u.name || "?").trim().charAt(0).toUpperCase();
+    document.getElementById("sbName").textContent = u.name;
+    document.getElementById("sbRole").textContent = names[u.role] || u.role;
+    card.hidden = false;
+  }
+  return r;
+};
+if (authCurrent()) authApplyUI();
+
+// BILTY-SEPARATE: changing one record's amount never changes another record.
+applySharedBultyAmount = function () { /* no propagation */ };
+
+
+// ===== REMEMBER-TYPED: typed values are remembered and shown in dropdowns =====
+(function rememberTyped() {
+  const KEY = "btdm_suggest";
+  const MAP = [
+    { sel: "#exMessage", key: "exMessage", list: "chargeMessageOptions" },
+    { sel: ".charge-label", key: "chargeLabel", list: "chargeLabelOptions" },
+    { sel: "#cgName", key: "cargoName" },
+    { sel: "#cgMessage, #crMessage", key: "cargoMessage" },
+    { sel: "#crBooking", key: "cargoBooking" },
+    { sel: ".exp-remark", key: "expRemark" },
+  ];
+  const baseOpts = {};
+  const load = () => { const v = Store.get(KEY, {}); return v && typeof v === "object" ? v : {}; };
+
+  function derived(key) {
+    const out = [];
+    try {
+      if (key === "exMessage") APP.exports.forEach(e => out.push((e.reportData || {}).message));
+      if (key === "chargeLabel") APP.exports.forEach(e => ((e.reportData || {}).charges || []).forEach(c => out.push(c.label)));
+      if (key === "cargoName") APP.cargos.forEach(c => out.push(c.name));
+      if (key === "cargoMessage") { APP.cargos.forEach(c => out.push(c.message)); (APP.cargoReports || []).forEach(r => out.push(r.message)); }
+      if (key === "cargoBooking") (APP.cargoReports || []).forEach(r => out.push(r.bookingLabel));
+      if (key === "expRemark") APP.expenses.forEach(e => out.push(e.remark));
+    } catch (err) { }
+    return out;
+  }
+
+  function values(entry) {
+    const dl = document.getElementById(entry.list || ("sg_" + entry.key));
+    if (dl && baseOpts[entry.key] === undefined) baseOpts[entry.key] = [...dl.querySelectorAll("option")].map(o => o.value);
+    const all = [].concat(baseOpts[entry.key] || [], load()[entry.key] || [], derived(entry.key));
+    const seen = new Set(), res = [];
+    all.forEach(v => {
+      const s = String(v || "").trim();
+      const k = s.toLowerCase();
+      if (!s || seen.has(k)) return;
+      seen.add(k); res.push(s);
+    });
+    return res;
+  }
+
+  function refresh(entry) {
+    const id = entry.list || ("sg_" + entry.key);
+    let dl = document.getElementById(id);
+    if (!dl) { dl = document.createElement("datalist"); dl.id = id; document.body.appendChild(dl); }
+    const vals = values(entry);
+    dl.innerHTML = vals.map(v => '<option value="' + escapeHtml(v) + '"></option>').join("");
+  }
+
+  function entryFor(el) {
+    return el && el.matches ? MAP.find(m => el.matches(m.sel)) : null;
+  }
+
+  document.addEventListener("focusin", e => {
+    const entry = entryFor(e.target);
+    if (!entry) return;
+    refresh(entry);
+    if (!e.target.getAttribute("list")) e.target.setAttribute("list", entry.list || ("sg_" + entry.key));
+  });
+
+  document.addEventListener("change", e => {
+    const entry = entryFor(e.target);
+    if (!entry) return;
+    const v = String(e.target.value || "").trim();
+    if (!v || v.length > 200) return;
+    const mem = load();
+    const arr = (mem[entry.key] || []).filter(x => String(x).toLowerCase() !== v.toLowerCase());
+    arr.unshift(v);
+    mem[entry.key] = arr.slice(0, 100);
+    Store.set(KEY, mem);
+  });
+
+  document.addEventListener("DOMContentLoaded", () => {
+    MAP.forEach(entry => {
+      refresh(entry);
+      document.querySelectorAll(entry.sel).forEach(el => { if (!el.getAttribute("list")) el.setAttribute("list", entry.list || ("sg_" + entry.key)); });
+    });
+  });
+})();
+
+// ===== New Area / Driver names typed anywhere are saved to Masters =====
+function autoAddAreasAndDrivers() {
+  const haveA = new Set(APP.areas.map(a => String(a.name || "").trim().toLowerCase()));
+  let addedA = 0;
+  const addArea = raw => {
+    const name = String(raw || "").trim().toUpperCase();
+    if (!name || haveA.has(name.toLowerCase())) return;
+    haveA.add(name.toLowerCase());
+    APP.areas.push({ id: uid("area"), name, status: "Active" });
+    addedA++;
+  };
+  APP.records.forEach(r => addArea(r.area));
+  (APP.cargoEntries || []).forEach(e => addArea(e.area));
+
+  const haveD = new Set(APP.drivers.map(d => String(d.name || "").trim().toLowerCase()));
+  let addedD = 0;
+  const addDriver = raw => {
+    const name = String(raw || "").trim();
+    if (!name || haveD.has(name.toLowerCase())) return;
+    haveD.add(name.toLowerCase());
+    APP.drivers.push({ id: uid("drv"), name, type: "Transport Driver", phone: "", status: "Active" });
+    addedD++;
+  };
+  APP.records.forEach(r => addDriver(r.driver));
+  APP.expenses.forEach(e => addDriver(e.driver));
+
+  if (addedA) { saveAreas(); if (typeof renderAreaTable === "function") renderAreaTable(); }
+  if (addedD) { saveDrivers(); if (typeof renderDriverTable === "function") renderDriverTable(); }
+  if (addedA || addedD) renderMasterOptions();
+}
+const __srAuto = saveRecords;
+saveRecords = function () { const r = __srAuto.apply(this, arguments); autoAddAreasAndDrivers(); return r; };
+const __sceAuto = saveCargoEntries;
+saveCargoEntries = function () { const r = __sceAuto.apply(this, arguments); autoAddAreasAndDrivers(); return r; };
+const __seAuto = saveExpenses;
+saveExpenses = function () { const r = __seAuto.apply(this, arguments); autoAddAreasAndDrivers(); return r; };
+
+
+// ===== CARGO FILTERS (same style as Dispatch Records) =====
+APP.cargoFilters = { from: "", to: "", area: "", party: "", status: "", q: "" };
+let __cfLastCargo = null;
+
+(function buildCargoFilterBar() {
+  const bar = document.querySelector("#cargoWrap .action-bar");
+  if (!bar || document.getElementById("cargoFilterPanel")) return;
+  const panel = document.createElement("div");
+  panel.className = "panel filter-panel";
+  panel.id = "cargoFilterPanel";
+  panel.innerHTML =
+    '<div class="filter-grid">' +
+    '<div class="field"><label for="cfFrom">From Date</label><input type="date" id="cfFrom"></div>' +
+    '<div class="field"><label for="cfTo">To Date</label><input type="date" id="cfTo"></div>' +
+    '<div class="field"><label for="cfArea">Area / City</label><select id="cfArea"><option value="">All Areas</option></select></div>' +
+    '<div class="field"><label for="cfParty">Party / School</label><select id="cfParty"><option value="">All Parties</option></select></div>' +
+    '<div class="field"><label for="cfStatus">Report Status</label><select id="cfStatus"><option value="">All</option><option value="pending">Not Reported</option><option value="reported">Reported</option></select></div>' +
+    '<div class="field field-search"><label for="cfSearch">Search</label><input type="text" id="cfSearch" placeholder="Search Party / Invoice / Bilty..."></div>' +
+    '</div>' +
+    '<div class="filter-actions">' +
+    '<button class="btn btn-primary" id="btnCfApply">Apply Filter</button>' +
+    '<button class="btn btn-secondary" id="btnCfReset">Reset Filters</button>' +
+    '<span class="filter-result-count" id="cfResultCount"></span>' +
+    '</div>';
+  bar.insertAdjacentElement("beforebegin", panel);
+
+  const apply = () => {
+    const v = id => document.getElementById(id).value;
+    APP.cargoFilters = { from: v("cfFrom"), to: v("cfTo"), area: v("cfArea"), party: v("cfParty"), status: v("cfStatus"), q: v("cfSearch").trim() };
+    if (typeof PG !== "undefined" && PG.cargo) PG.cargo.page = 1;
+    renderCargoPage();
+  };
+  const reset = () => {
+    ["cfFrom", "cfTo", "cfArea", "cfParty", "cfStatus", "cfSearch"].forEach(id => { document.getElementById(id).value = ""; });
+    apply();
+  };
+  document.getElementById("btnCfApply").addEventListener("click", apply);
+  document.getElementById("btnCfReset").addEventListener("click", reset);
+  ["cfFrom", "cfTo", "cfArea", "cfParty", "cfStatus"].forEach(id => document.getElementById(id).addEventListener("change", apply));
+  document.getElementById("cfSearch").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); apply(); } });
+  window.__cfReset = reset;
+})();
+
+function cargoPassesFilter(e, f) {
+  const d = String(e.dateBooking || "");
+  if (f.from && d < f.from) return false;
+  if (f.to && d > f.to) return false;
+  if (f.area && String(e.area || "").trim().toLowerCase() !== f.area.toLowerCase()) return false;
+  if (f.party && String(e.party || "").trim().toLowerCase() !== f.party.toLowerCase()) return false;
+  if (f.status === "pending" && e.reportNo) return false;
+  if (f.status === "reported" && !e.reportNo) return false;
+  if (f.q) {
+    const hay = [e.party, e.area, e.invNo, e.bultyNo].join(" ").toLowerCase();
+    if (!hay.includes(f.q.toLowerCase())) return false;
+  }
+  return true;
+}
+function cargoFilterActive() {
+  const f = APP.cargoFilters;
+  return !!(f.from || f.to || f.area || f.party || f.status || f.q);
+}
+// Run fn with only the filtered entries of the open cargo visible to the table code
+function withCargoFilter(fn) {
+  const all = APP.cargoEntries;
+  const f = APP.cargoFilters;
+  APP.cargoEntries = all.filter(e => e.cargoId !== APP.activeCargoId || cargoPassesFilter(e, f));
+  try { return fn(); } finally { APP.cargoEntries = all; }
+}
+function cargoFillSelect(id, values, label) {
+  const sel = document.getElementById(id);
+  if (!sel) return;
+  const cur = sel.value;
+  const uniq = [...new Set(values.map(v => String(v || "").trim()).filter(Boolean))].sort((a, b) => a.localeCompare(b));
+  if (cur && !uniq.some(v => v.toLowerCase() === cur.toLowerCase())) uniq.push(cur);
+  sel.innerHTML = '<option value="">' + label + '</option>' + uniq.map(v => '<option value="' + escapeHtml(v) + '">' + escapeHtml(v) + '</option>').join("");
+  sel.value = cur;
+}
+
+const __renderCargoPageFilterOrig = renderCargoPage;
+renderCargoPage = function () {
+  if (APP.activeCargoId !== __cfLastCargo) {          // new cargo tab -> clean filters
+    __cfLastCargo = APP.activeCargoId;
+    if (cargoFilterActive() && window.__cfReset) {
+      APP.cargoFilters = { from: "", to: "", area: "", party: "", status: "", q: "" };
+      ["cfFrom", "cfTo", "cfArea", "cfParty", "cfStatus", "cfSearch"].forEach(id => { const el = document.getElementById(id); if (el) el.value = ""; });
+    }
+  }
+  const mine = APP.cargoEntries.filter(e => e.cargoId === APP.activeCargoId);
+  cargoFillSelect("cfArea", mine.map(e => e.area), "All Areas");
+  cargoFillSelect("cfParty", mine.map(e => e.party), "All Parties");
+  const res = withCargoFilter(() => __renderCargoPageFilterOrig.apply(this, arguments));
+  // the tab badge always shows the real total
+  const tab = document.querySelector('#cargoTabs [data-cargo="' + APP.activeCargoId + '"] .view-count');
+  if (tab) tab.textContent = mine.length;
+  const info = document.getElementById("cfResultCount");
+  if (info) {
+    const shown = mine.filter(e => cargoPassesFilter(e, APP.cargoFilters)).length;
+    info.textContent = mine.length ? "Showing " + shown + " of " + mine.length + " entries" : "";
+  }
+  return res;
+};
+
+// Export Excel follows the filters too (like Dispatch Records)
+if (typeof cargoExportExcel === "function") {
+  const __cargoExportOrig = cargoExportExcel;
+  cargoExportExcel = function () { const a = arguments, self = this; return withCargoFilter(() => __cargoExportOrig.apply(self, a)); };
+}
